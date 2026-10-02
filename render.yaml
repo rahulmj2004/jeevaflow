@@ -1,5 +1,4 @@
-cd ~/jeevaflow
-code render.yamlservices:
+services:
   - type: web
     name: jeevaflow-backend
     runtime: python
@@ -11,7 +10,7 @@ code render.yamlservices:
 
     envVars:
       - key: PYTHON_VERSION
-        value: 3.11
+        value: "3.11"
 
       - key: JEEVAFLOW_ENV
         value: production
