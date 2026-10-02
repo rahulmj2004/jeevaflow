@@ -3,7 +3,7 @@ Doctor-ready form.
 
 Arranges source-linked, consented data for clinical review:
 
-    Patient reference, Medications (dose, frequency, duration),
+    Case ID (random alias, never identity), Medications (dose, frequency, duration),
     Laboratory results, Allergies, Source-supported notes
     (instructions), Uncertain information, Missing information,
     Source evidence
@@ -12,10 +12,15 @@ Only scopes covered by the patient's active consent are included;
 the rest are listed as "not shared". Nothing is interpreted, values
 are never marked better or worse, and every item links to its
 evidence. Rejected items are left out.
+
+Pseudonymized: no name, phone, date of birth, address or ID numbers.
+The patient appears only as a random case alias (plus an age band
+when DEMOGRAPHICS is shared), and every free-text string is passed
+through mask_pii() before it leaves the server.
 """
 
 import json
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -34,6 +39,7 @@ from .models import (
     SourceEvidence,
 )
 from .security.consent import SCOPES, scopes_of
+from .security.masking import identity_terms, mask_tree
 
 
 NOTICE = (
@@ -60,6 +66,21 @@ def _evidence(evidence: Optional[SourceEvidence], document: Optional[Document]) 
         "has_region": evidence.bbox_x is not None,
         "confidence": evidence.confidence,
     }
+
+
+def _age_band(date_of_birth: Optional[str]) -> Optional[str]:
+    try:
+        born = date.fromisoformat(date_of_birth or "")
+    except ValueError:
+        return None
+
+    today = date.today()
+    age = today.year - born.year - ((today.month, today.day) < (born.month, born.day))
+
+    if age < 0:
+        return None
+
+    return f"{(age // 10) * 10}-{(age // 10) * 10 + 9}" if age < 90 else "90+"
 
 
 def _observation_date(observation: Observation, document: Optional[Document]):
@@ -92,13 +113,15 @@ def build_doctor_form(db: Session, idb: Session, patient: Patient, consent: Cons
     uncertain: list[dict] = []
     missing: list[dict] = []
 
-    # ---------------- patient reference ----------------
-    identity = get_identity(idb, patient.ref) if "DEMOGRAPHICS" in scopes else None
+    # ---------------- case (pseudonymous) ----------------
+    # Identity is read only to build masking terms and an age band;
+    # it is never placed in the response.
+    identity = get_identity(idb, patient.ref)
+    terms = identity_terms(identity.name, identity.phone) if identity else []
 
     patient_section = {
-        "ref": patient.ref,
-        "name": identity.name if identity else None,
-        "date_of_birth": identity.date_of_birth if identity else None,
+        "case_alias": patient.case_alias,
+        "age_band": _age_band(identity.date_of_birth) if identity and "DEMOGRAPHICS" in scopes else None,
         "demographics_shared": "DEMOGRAPHICS" in scopes,
     }
 
@@ -244,7 +267,7 @@ def build_doctor_form(db: Session, idb: Session, patient: Patient, consent: Cons
         for document in sorted(documents.values(), key=lambda d: d.created_at)
     ]
 
-    return {
+    return mask_tree({
         "generated_at": datetime.utcnow(),
         "patient": patient_section,
         "consent": {
@@ -267,4 +290,4 @@ def build_doctor_form(db: Session, idb: Session, patient: Patient, consent: Cons
         "missing": missing,
         "sources": sources,
         "notice": NOTICE,
-    }
+    }, terms)

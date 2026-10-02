@@ -24,8 +24,10 @@ Operations:
              (PDF scrub/rebuild, image re-encode without metadata)
     extract  text / OCR, quality gate, rule-based extraction with
              bounding boxes and confidence
-    render   one page with the evidence region highlighted and a
-             viewer watermark burned in (PNG)
+    render   one page with the evidence region highlighted, patient
+             identity blacked out (text layer or OCR word boxes) and a
+             viewer watermark burned in, flattened to one PNG raster.
+             Fails closed to a "masking unavailable" placeholder.
 """
 
 import base64
@@ -467,12 +469,103 @@ def op_extract(job: dict) -> dict:
 # RENDER (secure evidence viewer)
 # ============================================================
 
+class MaskingUnavailable(Exception):
+    pass
+
+
+def _text_lines(pdf_page) -> list[list[tuple]]:
+    """
+    Words of a PDF text layer grouped into lines, as
+    (text, x0, y0, x1, y1) in page fractions.
+    """
+
+    rect = pdf_page.rect
+    lines: dict = {}
+
+    for x0, y0, x1, y1, word, block, line, _ in pdf_page.get_text("words"):
+        lines.setdefault((block, line), []).append(
+            (word, x0 / rect.width, y0 / rect.height, x1 / rect.width, y1 / rect.height)
+        )
+
+    return list(lines.values())
+
+
+def _ocr_lines(image) -> list[list[tuple]]:
+    import pytesseract
+
+    rgb = image.convert("RGB")
+    data = pytesseract.image_to_data(rgb, output_type=pytesseract.Output.DICT)
+    width, height = rgb.size
+    lines: dict = {}
+
+    for index, raw in enumerate(data["text"]):
+        token = (raw or "").strip()
+
+        if not token:
+            continue
+
+        x, y = data["left"][index], data["top"][index]
+        key = (data["block_num"][index], data["par_num"][index], data["line_num"][index])
+        lines.setdefault(key, []).append(
+            (token, x / width, y / height, (x + data["width"][index]) / width, (y + data["height"][index]) / height)
+        )
+
+    if not lines:
+        # Nothing recognised: identity cannot be ruled out.
+        raise MaskingUnavailable()
+
+    return list(lines.values())
+
+
+def _mask_boxes(lines: list[list[tuple]], terms: list[str]) -> list[tuple]:
+    from app.security.masking import pii_spans
+
+    boxes = []
+
+    for words in lines:
+        text, offsets = "", []
+
+        for word in words:
+            if text:
+                text += " "
+            offsets.append((len(text), len(text) + len(word[0])))
+            text += word[0]
+
+        for start, end in pii_spans(text, terms):
+            for (w_start, w_end), word in zip(offsets, words):
+                if w_start < end and w_end > start:
+                    boxes.append(word[1:])
+
+    return boxes
+
+
+def _placeholder(width: int, height: int):
+    from PIL import Image, ImageDraw, ImageFont
+
+    image = Image.new("RGB", (max(width, 600), max(height, 300)), (60, 60, 60))
+    draw = ImageDraw.Draw(image)
+
+    try:
+        font = ImageFont.load_default(size=max(18, image.width // 40))
+    except TypeError:
+        font = ImageFont.load_default()
+
+    draw.text(
+        (30, image.height // 2 - 20),
+        "Masking unavailable - source view withheld to protect patient identity.",
+        fill=(255, 255, 255), font=font,
+    )
+
+    return image
+
+
 def op_render(job: dict) -> dict:
     from PIL import Image, ImageDraw, ImageFont
 
     data = base64.b64decode(job["data"])
     content_type = job["content_type"]
     page_number = int(job.get("page") or 1)
+    terms = [str(term) for term in job.get("mask_terms") or []][:10]
 
     if content_type == "application/pdf":
         import pymupdf
@@ -483,17 +576,53 @@ def op_render(job: dict) -> dict:
             if not 1 <= page_number <= pdf.page_count:
                 raise Rejected("PAGE_NOT_FOUND")
 
-            pixmap = pdf[page_number - 1].get_pixmap(dpi=VIEW_RENDER_DPI)
+            page = pdf[page_number - 1]
+            pixmap = page.get_pixmap(dpi=VIEW_RENDER_DPI)
             image = Image.open(io.BytesIO(pixmap.tobytes("png"))).convert("RGB")
+
+            try:
+                if (page.get_text() or "").strip():
+                    lines = _text_lines(page)
+                else:
+                    ocr_pixmap = page.get_pixmap(dpi=OCR_RENDER_DPI)
+
+                    with Image.open(io.BytesIO(ocr_pixmap.tobytes("png"))) as ocr_image:
+                        lines = _ocr_lines(ocr_image)
+
+                mask_boxes = _mask_boxes(lines, terms)
+            except Exception:
+                mask_boxes = None
         finally:
             pdf.close()
     else:
         image, _ = _open_image(data, content_type)
         image = image.convert("RGB")
 
+        try:
+            mask_boxes = _mask_boxes(_ocr_lines(image), terms)
+        except Exception:
+            mask_boxes = None
+
+    masked = mask_boxes is not None
+
+    if not masked:
+        # Fail closed: never return the unmasked page.
+        image = _placeholder(image.width, image.height)
+        job["bbox"] = None
+
     if image.width > MAX_VIEW_WIDTH:
         ratio = MAX_VIEW_WIDTH / image.width
         image = image.resize((MAX_VIEW_WIDTH, int(image.height * ratio)))
+
+    # Solid black boxes drawn into the base raster (no layers).
+    black = ImageDraw.Draw(image)
+
+    for x0, y0, x1, y1 in mask_boxes or []:
+        black.rectangle(
+            (int(x0 * image.width) - 3, int(y0 * image.height) - 3,
+             int(x1 * image.width) + 3, int(y1 * image.height) + 3),
+            fill=(0, 0, 0),
+        )
 
     overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
@@ -538,7 +667,7 @@ def op_render(job: dict) -> dict:
     out = io.BytesIO()
     composed.save(out, format="PNG")
 
-    return {"png": base64.b64encode(out.getvalue()).decode()}
+    return {"png": base64.b64encode(out.getvalue()).decode(), "masked": masked}
 
 
 OPERATIONS = {"inspect": op_inspect, "extract": op_extract, "render": op_render}

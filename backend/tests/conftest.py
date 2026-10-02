@@ -172,6 +172,19 @@ def grant_consent(patient_ref: str, doctor_username: str = "dr.example", scopes=
         idb.close()
 
 
+def case_of(patient_ref: str) -> str:
+    """
+    The doctor-facing case alias for a patient ref.
+    """
+
+    db = SessionLocal()
+
+    try:
+        return db.query(Patient).filter(Patient.ref == patient_ref).one().case_alias
+    finally:
+        db.close()
+
+
 @pytest.fixture()
 def patient_ref(client):
     patient = new_patient()

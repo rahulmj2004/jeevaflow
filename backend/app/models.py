@@ -28,7 +28,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship
 
 from .database import Base
-from .security.crypto import EncryptedText
+from .security.crypto import EncryptedText, new_case_alias
 
 
 PIPELINE_VERSION = "jeevaflow-extract-2.0"
@@ -75,6 +75,8 @@ class Patient(Base):
     # Pseudonymous patient reference; the only patient identifier
     # used outside the identity store.
     ref = Column(String(40), unique=True, nullable=False, index=True)
+    # Random case ID; the only patient identifier doctors ever see.
+    case_alias = Column(String(20), unique=True, nullable=True, index=True, default=new_case_alias)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     documents = relationship(

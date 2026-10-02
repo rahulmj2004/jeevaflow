@@ -9,6 +9,7 @@ from app.database import SessionLocal
 from app.models import Commitment, LoopEvent
 
 from tests.conftest import (
+    case_of,
     FOLLOWUP_REPORT_TEXT,
     INITIAL_REPORT_TEXT,
     PRESCRIPTION_TEXT,
@@ -20,7 +21,7 @@ from tests.conftest import (
 
 
 def _loops(doctor, patient_ref):
-    response = doctor.get(f"/api/v1/doctor/patients/{patient_ref}/loops")
+    response = doctor.get(f"/api/v1/doctor/patients/{case_of(patient_ref)}/loops")
     assert response.status_code == 200, response.text
     return response.json()
 
@@ -52,10 +53,10 @@ def test_open_loops_and_overdue(doctor, patient_ref):
 
 def test_conflict_detection_and_rejection(doctor, patient_ref):
     ingest(patient_ref, make_pdf(INITIAL_REPORT_TEXT))
-    assert doctor.get(f"/api/v1/doctor/patients/{patient_ref}/conflicts").json() == []
+    assert doctor.get(f"/api/v1/doctor/patients/{case_of(patient_ref)}/conflicts").json() == []
 
     ingest(patient_ref, make_pdf("Report Date: 15/06/2026\nHbA1c: 8.2 %\n"))
-    conflicts = doctor.get(f"/api/v1/doctor/patients/{patient_ref}/conflicts").json()
+    conflicts = doctor.get(f"/api/v1/doctor/patients/{case_of(patient_ref)}/conflicts").json()
 
     assert len(conflicts) == 1
     assert conflicts[0]["status"] == "HUMAN_REVIEW_REQUIRED"
@@ -63,14 +64,14 @@ def test_conflict_detection_and_rejection(doctor, patient_ref):
 
     rejected = next(item for item in conflicts[0]["observations"] if item["value"] == "8.2")
     assert doctor.patch(f"/api/v1/doctor/observations/{rejected['id']}/reject").status_code == 200
-    assert doctor.get(f"/api/v1/doctor/patients/{patient_ref}/conflicts").json() == []
+    assert doctor.get(f"/api/v1/doctor/patients/{case_of(patient_ref)}/conflicts").json() == []
 
 
 def test_followup_on_later_date_is_not_a_conflict(doctor, patient_ref):
     ingest(patient_ref, make_pdf(INITIAL_REPORT_TEXT))
     ingest(patient_ref, make_pdf(FOLLOWUP_REPORT_TEXT))
 
-    assert doctor.get(f"/api/v1/doctor/patients/{patient_ref}/conflicts").json() == []
+    assert doctor.get(f"/api/v1/doctor/patients/{case_of(patient_ref)}/conflicts").json() == []
 
 
 def test_potential_match_then_human_confirmation(doctor, patient_ref):
@@ -132,10 +133,10 @@ def test_doctor_form_sections(doctor, patient_ref):
     ingest(patient_ref, make_pdf(PRESCRIPTION_TEXT))
     ingest(patient_ref, make_pdf(INITIAL_REPORT_TEXT))
 
-    form = doctor.get(f"/api/v1/doctor/patients/{patient_ref}/form").json()
+    form = doctor.get(f"/api/v1/doctor/patients/{case_of(patient_ref)}/form").json()
 
-    assert form["patient"]["ref"] == patient_ref
-    assert form["patient"]["name"] == "Synthetic Test Patient"
+    assert form["patient"]["case_alias"] == case_of(patient_ref)
+    assert "name" not in form["patient"] and "ref" not in form["patient"]
 
     medications = {item["label"]: item for item in form["medications"]}
     assert set(medications) == {"Metformin 500 mg", "Glimepiride 1 mg", "Zyxorin 50 mg"}
@@ -161,9 +162,9 @@ def test_doctor_form_respects_scope(doctor, client):
     grant_consent(patient.ref, scopes=["LABS"])
     ingest(patient.ref, make_pdf(PRESCRIPTION_TEXT + "\nHbA1c: 7.0 %\n"))
 
-    form = doctor.get(f"/api/v1/doctor/patients/{patient.ref}/form").json()
+    form = doctor.get(f"/api/v1/doctor/patients/{case_of(patient.ref)}/form").json()
 
-    assert form["patient"]["name"] is None
+    assert form["patient"]["age_band"] is None
     assert form["medications"] is None
     assert form["allergies"] is None
     assert form["notes"] is None
@@ -173,12 +174,12 @@ def test_doctor_form_respects_scope(doctor, client):
     }
 
     # Out-of-scope data is not reachable through other routes either.
-    assert doctor.get(f"/api/v1/doctor/patients/{patient.ref}/loops").status_code == 403
+    assert doctor.get(f"/api/v1/doctor/patients/{case_of(patient.ref)}/loops").status_code == 403
 
 
 def test_doctor_confirms_uncertain_fact(doctor, patient_ref):
     ingest(patient_ref, make_pdf(PRESCRIPTION_TEXT))
-    form = doctor.get(f"/api/v1/doctor/patients/{patient_ref}/form").json()
+    form = doctor.get(f"/api/v1/doctor/patients/{case_of(patient_ref)}/form").json()
     fact = next(item for item in form["medications"] if item["state"] == "UNCERTAIN")
 
     response = doctor.patch(f"/api/v1/doctor/facts/{fact['ref']}/confirm")
@@ -187,5 +188,5 @@ def test_doctor_confirms_uncertain_fact(doctor, patient_ref):
     rejected = doctor.patch(f"/api/v1/doctor/facts/{form['medications'][0]['ref']}/reject")
     assert rejected.json()["review_status"] == "REJECTED"
 
-    form = doctor.get(f"/api/v1/doctor/patients/{patient_ref}/form").json()
+    form = doctor.get(f"/api/v1/doctor/patients/{case_of(patient_ref)}/form").json()
     assert len(form["medications"]) == 2

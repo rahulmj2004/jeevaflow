@@ -58,6 +58,7 @@ from ..security import audit
 from ..security.auth import GENERIC_FORBIDDEN, StaffPrincipal, require_doctor
 from ..security.consent import authorize_doctor, consent_status, scopes_of
 from ..security.crypto import keyed_hash
+from ..security.masking import identity_terms, mask_tree
 from ..timeline import get_patient_timeline
 from ..worker_client import WorkerError, decode, run_worker
 from .deps import limit
@@ -86,8 +87,18 @@ def forbidden():
 def _granted(principal: StaffPrincipal, patient: Patient, what: str):
     audit.record_now(
         "DOCTOR_ACCESS_GRANTED", actor_type="STAFF", actor_ref=principal.user_ref,
-        object_type="PATIENT", object_ref=patient.ref, reason=what,
+        object_type="CASE", object_ref=patient.case_alias, reason=what,
     )
+
+
+def _terms(idb: Session, patient: Patient) -> list[str]:
+    """
+    The patient's own name and phone, used only as masking terms.
+    """
+
+    identity = get_identity(idb, patient.ref)
+
+    return identity_terms(identity.name, identity.phone) if identity else []
 
 
 def _patient_of(db: Session, patient_id: int) -> Optional[Patient]:
@@ -142,11 +153,9 @@ def my_patients(
 
         seen.add(consent.patient_id)
         patient = db.get(Patient, consent.patient_id)
-        identity = get_identity(idb, patient.ref) if "DEMOGRAPHICS" in scopes_of(consent) else None
 
         items.append({
-            "patient_ref": patient.ref,
-            "name": identity.name if identity else None,
+            "case_alias": patient.case_alias,
             "consent_ref": consent.ref,
             "scopes": sorted(scopes_of(consent)),
             "expires_at": consent.expires_at,
@@ -155,27 +164,27 @@ def my_patients(
     return items
 
 
-@router.get("/patients/{patient_ref}/form")
+@router.get("/patients/{case_alias}/form")
 def doctor_form(
-    patient_ref: str,
+    case_alias: str,
     principal: StaffPrincipal = Depends(require_doctor),
     db: Session = Depends(get_db),
     idb: Session = Depends(get_identity_db),
 ):
-    patient, consent = authorize_doctor(db, principal, patient_ref)
+    patient, consent = authorize_doctor(db, principal, case_alias)
     _granted(principal, patient, "DOCTOR_FORM")
 
     return build_doctor_form(db, idb, patient, consent)
 
 
-@router.get("/patients/{patient_ref}/journey")
+@router.get("/patients/{case_alias}/journey")
 def journey(
-    patient_ref: str,
+    case_alias: str,
     principal: StaffPrincipal = Depends(require_doctor),
     db: Session = Depends(get_db),
     idb: Session = Depends(get_identity_db),
 ):
-    patient, consent = authorize_doctor(db, principal, patient_ref)
+    patient, consent = authorize_doctor(db, principal, case_alias)
     scopes = scopes_of(consent)
     _granted(principal, patient, "JOURNEY")
 
@@ -200,10 +209,8 @@ def journey(
     loops = _scoped_loops(get_open_loops(db=db, patient_id=patient.id), scopes) if "INSTRUCTIONS" in scopes else []
     conflicts = detect_observation_conflicts(db=db, patient_id=patient.id) if "LABS" in scopes else []
 
-    identity = get_identity(idb, patient.ref) if "DEMOGRAPHICS" in scopes else None
-
-    return {
-        "patient": {"ref": patient.ref, "name": identity.name if identity else None},
+    return mask_tree({
+        "patient": {"case_alias": patient.case_alias},
         "consent": {
             "ref": consent.ref,
             "scopes": sorted(scopes),
@@ -232,19 +239,24 @@ def journey(
         "timeline": timeline,
         "open_loops": loops,
         "conflicts": conflicts,
-    }
+    }, _terms(idb, patient))
 
 
-@router.get("/patients/{patient_ref}/loops")
-def loops(patient_ref: str, principal: StaffPrincipal = Depends(require_doctor), db: Session = Depends(get_db)):
-    patient, consent = authorize_doctor(db, principal, patient_ref, "INSTRUCTIONS")
+@router.get("/patients/{case_alias}/loops")
+def loops(
+    case_alias: str,
+    principal: StaffPrincipal = Depends(require_doctor),
+    db: Session = Depends(get_db),
+    idb: Session = Depends(get_identity_db),
+):
+    patient, consent = authorize_doctor(db, principal, case_alias, "INSTRUCTIONS")
 
-    return _scoped_loops(get_open_loops(db=db, patient_id=patient.id), scopes_of(consent))
+    return mask_tree(_scoped_loops(get_open_loops(db=db, patient_id=patient.id), scopes_of(consent)), _terms(idb, patient))
 
 
-@router.get("/patients/{patient_ref}/conflicts")
-def conflicts(patient_ref: str, principal: StaffPrincipal = Depends(require_doctor), db: Session = Depends(get_db)):
-    patient, _ = authorize_doctor(db, principal, patient_ref, "LABS")
+@router.get("/patients/{case_alias}/conflicts")
+def conflicts(case_alias: str, principal: StaffPrincipal = Depends(require_doctor), db: Session = Depends(get_db)):
+    patient, _ = authorize_doctor(db, principal, case_alias, "LABS")
 
     return detect_observation_conflicts(db=db, patient_id=patient.id)
 
@@ -263,7 +275,7 @@ def _observation(db: Session, principal: StaffPrincipal, observation_id: int) ->
         )
         forbidden()
 
-    authorize_doctor(db, principal, _patient_of(db, observation.patient_id).ref, "LABS")
+    authorize_doctor(db, principal, _patient_of(db, observation.patient_id).case_alias, "LABS")
 
     return observation
 
@@ -367,7 +379,7 @@ def _fact(db: Session, principal: StaffPrincipal, fact_ref: str) -> ClinicalFact
         )
         forbidden()
 
-    authorize_doctor(db, principal, _patient_of(db, fact.patient_id).ref, CATEGORY_SCOPE[fact.category])
+    authorize_doctor(db, principal, _patient_of(db, fact.patient_id).case_alias, CATEGORY_SCOPE[fact.category])
 
     return fact
 
@@ -416,7 +428,7 @@ def _commitment(db: Session, principal: StaffPrincipal, commitment_id: int) -> C
         )
         forbidden()
 
-    authorize_doctor(db, principal, _patient_of(db, commitment.patient_id).ref, "INSTRUCTIONS")
+    authorize_doctor(db, principal, _patient_of(db, commitment.patient_id).case_alias, "INSTRUCTIONS")
 
     return commitment
 
@@ -436,11 +448,17 @@ def _loop_decision(db: Session, principal: StaffPrincipal, commitment: Commitmen
 
 
 @router.get("/commitments/{commitment_id}")
-def commitment_detail(commitment_id: int, principal: StaffPrincipal = Depends(require_doctor), db: Session = Depends(get_db)):
+def commitment_detail(
+    commitment_id: int,
+    principal: StaffPrincipal = Depends(require_doctor),
+    db: Session = Depends(get_db),
+    idb: Session = Depends(get_identity_db),
+):
     commitment = _commitment(db, principal, commitment_id)
-    _, consent = authorize_doctor(db, principal, _patient_of(db, commitment.patient_id).ref, "INSTRUCTIONS")
+    patient, consent = authorize_doctor(db, principal, _patient_of(db, commitment.patient_id).case_alias, "INSTRUCTIONS")
+    loop = _scoped_loops([serialize_loop(db, commitment, include_history=True)], scopes_of(consent))[0]
 
-    return _scoped_loops([serialize_loop(db, commitment, include_history=True)], scopes_of(consent))[0]
+    return mask_tree(loop, _terms(idb, patient))
 
 
 @router.post("/commitments/{commitment_id}/confirm-completion")
@@ -509,12 +527,12 @@ def _authorize_evidence(db: Session, principal: StaffPrincipal, evidence_id: int
     document = db.get(Document, evidence.document_id)
     patient = _patient_of(db, document.patient_id)
 
-    patient, consent = authorize_doctor(db, principal, patient.ref, "SOURCE_DOCUMENTS" if require_source else None)
+    patient, consent = authorize_doctor(db, principal, patient.case_alias, "SOURCE_DOCUMENTS" if require_source else None)
 
     if not (_evidence_scopes(db, evidence) & scopes_of(consent)):
         audit.record_now(
             "DOCTOR_ACCESS_DENIED", actor_type="STAFF", actor_ref=principal.user_ref,
-            object_type="PATIENT", object_ref=patient.ref, result="DENIED", reason="SCOPE",
+            object_type="CASE", object_ref=patient.case_alias, result="DENIED", reason="SCOPE",
         )
         forbidden()
 
@@ -522,8 +540,13 @@ def _authorize_evidence(db: Session, principal: StaffPrincipal, evidence_id: int
 
 
 @router.get("/evidence/{evidence_id}")
-def evidence_detail(evidence_id: int, principal: StaffPrincipal = Depends(require_doctor), db: Session = Depends(get_db)):
-    evidence, document, _ = _authorize_evidence(db, principal, evidence_id, require_source=False)
+def evidence_detail(
+    evidence_id: int,
+    principal: StaffPrincipal = Depends(require_doctor),
+    db: Session = Depends(get_db),
+    idb: Session = Depends(get_identity_db),
+):
+    evidence, document, patient = _authorize_evidence(db, principal, evidence_id, require_source=False)
 
     result = serialize_evidence(evidence, document)
     result.pop("document_id", None)
@@ -548,7 +571,9 @@ def evidence_detail(evidence_id: int, principal: StaffPrincipal = Depends(requir
 
     result["linked_items"] = linked
 
-    return result
+    # Anchoring was verified against the original page text at
+    # extraction; the doctor only ever receives the masked quote.
+    return mask_tree(result, _terms(idb, patient))
 
 
 @router.post("/evidence/{evidence_id}/view-token")
@@ -588,6 +613,7 @@ async def view_evidence(
     token: str,
     principal: StaffPrincipal = Depends(require_doctor),
     db: Session = Depends(get_db),
+    idb: Session = Depends(get_identity_db),
 ):
     def reject(reason: str):
         audit.record_now(
@@ -619,7 +645,7 @@ async def view_evidence(
 
     # Consent is re-checked at view time, not only at issue time.
     patient = db.get(Patient, row.patient_id)
-    authorize_doctor(db, principal, patient.ref, "SOURCE_DOCUMENTS")
+    authorize_doctor(db, principal, patient.case_alias, "SOURCE_DOCUMENTS")
 
     document = db.get(Document, row.document_id)
     evidence = db.get(SourceEvidence, row.evidence_id)
@@ -640,6 +666,7 @@ async def view_evidence(
         rendered = await run_in_threadpool(
             run_worker, "render", plaintext, document.content_type,
             page=evidence.page_number or 1, bbox=bbox, watermark=watermark,
+            mask_terms=_terms(idb, patient),
         )
     except WorkerError:
         raise HTTPException(status_code=422, detail="The evidence could not be displayed.")
@@ -649,6 +676,7 @@ async def view_evidence(
     audit.record_now(
         "DOCUMENT_VIEWED", actor_type="STAFF", actor_ref=principal.user_ref,
         object_type="DOCUMENT", object_ref=document.ref,
+        reason=None if rendered.get("masked") else "MASKING_UNAVAILABLE",
     )
 
     return Response(
@@ -659,5 +687,6 @@ async def view_evidence(
             "Pragma": "no-cache",
             "Content-Disposition": "inline",
             "X-Content-Type-Options": "nosniff",
+            "X-JeevaFlow-Masking": "applied" if rendered.get("masked") else "unavailable",
         },
     )

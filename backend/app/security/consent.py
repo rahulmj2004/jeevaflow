@@ -136,17 +136,24 @@ def active_consent(
 def authorize_doctor(
     db: Session,
     principal: StaffPrincipal,
-    patient_ref: str,
+    case_alias: str,
     scope: Optional[str] = None,
     purpose: str = PURPOSE_CLINICAL_REVIEW,
 ) -> tuple[Patient, Consent]:
+    """
+    Doctors address patients only by their random case alias
+    (CASE-XXXX-XXXX). Unknown and unconsented cases get the same 403.
+    """
+
     def deny(reason: str):
         audit.record_now(
             "DOCTOR_ACCESS_DENIED", actor_type="STAFF", actor_ref=principal.user_ref,
-            object_type="PATIENT", object_ref=patient_ref if patient_ref.startswith("pt_") else None,
+            object_type="CASE", object_ref=case_alias[:20] if patient is not None else None,
             result="DENIED", reason=reason,
         )
         raise HTTPException(status_code=403, detail=GENERIC_FORBIDDEN)
+
+    patient = None
 
     if principal.role != "DOCTOR":
         deny("ROLE")
@@ -160,7 +167,7 @@ def authorize_doctor(
         )
         raise
 
-    patient = db.query(Patient).filter(Patient.ref == patient_ref).first()
+    patient = db.query(Patient).filter(Patient.case_alias == case_alias).first()
 
     if patient is None:
         deny("NO_CONSENT")

@@ -34,6 +34,7 @@ from app.security.otp import MAX_ATTEMPTS
 from app.worker_client import _environment
 
 from tests.conftest import (
+    case_of,
     INITIAL_REPORT_TEXT,
     PRESCRIPTION_TEXT,
     extract_otp,
@@ -88,7 +89,7 @@ def demo_patient_ref(client):
 
 
 def first_evidence_id(doctor, patient_ref):
-    form = doctor.get(f"/api/v1/doctor/patients/{patient_ref}/form").json()
+    form = doctor.get(f"/api/v1/doctor/patients/{case_of(patient_ref)}/form").json()
     return form["medications"][0]["evidence"]["evidence_id"]
 
 
@@ -108,15 +109,15 @@ def test_end_to_end_secure_flow(client, doctor):
     assert phone[-1]["kind"] == "PROCESSED"
 
     patients = doctor.get("/api/v1/doctor/patients").json()
-    assert [item["patient_ref"] for item in patients] == [demo_patient_ref(client)]
+    assert [item["case_alias"] for item in patients] == [case_of(demo_patient_ref(client))]
 
-    form = doctor.get(f"/api/v1/doctor/patients/{patients[0]['patient_ref']}/form").json()
+    form = doctor.get(f"/api/v1/doctor/patients/{patients[0]['case_alias']}/form").json()
     assert {item["label"] for item in form["medications"]} >= {"Metformin 500 mg"}
 
     revoked = client.post(f"/api/v1/portal/consents/{granted['consent']['ref']}/revoke").json()
     assert revoked["status"] == "REVOKED"
 
-    assert doctor.get(f"/api/v1/doctor/patients/{patients[0]['patient_ref']}/form").status_code == 403
+    assert doctor.get(f"/api/v1/doctor/patients/{patients[0]['case_alias']}/form").status_code == 403
     assert doctor.get("/api/v1/doctor/patients").json() == []
 
 
@@ -248,7 +249,7 @@ def test_doctor_without_consent_is_denied(client, other_client):
 
     login(other_client, "dr.example")
 
-    assert other_client.get(f"/api/v1/doctor/patients/{patient.ref}/form").status_code == 403
+    assert other_client.get(f"/api/v1/doctor/patients/{case_of(patient.ref)}/form").status_code == 403
     assert other_client.get("/api/v1/doctor/patients").json() == []
 
 
@@ -257,7 +258,7 @@ def test_wrong_doctor_is_denied(client, other_client, patient_ref):
 
     login(other_client, "dr.other")
 
-    response = other_client.get(f"/api/v1/doctor/patients/{patient_ref}/form")
+    response = other_client.get(f"/api/v1/doctor/patients/{case_of(patient_ref)}/form")
     assert response.status_code == 403
     assert response.json()["detail"] == "Access not permitted."
 
@@ -266,7 +267,7 @@ def test_expired_consent_denied(doctor, client):
     patient = new_patient()
     consent_ref = grant_consent(patient.ref)
 
-    assert doctor.get(f"/api/v1/doctor/patients/{patient.ref}/form").status_code == 200
+    assert doctor.get(f"/api/v1/doctor/patients/{case_of(patient.ref)}/form").status_code == 200
 
     db = SessionLocal()
     try:
@@ -276,7 +277,7 @@ def test_expired_consent_denied(doctor, client):
     finally:
         db.close()
 
-    assert doctor.get(f"/api/v1/doctor/patients/{patient.ref}/form").status_code == 403
+    assert doctor.get(f"/api/v1/doctor/patients/{case_of(patient.ref)}/form").status_code == 403
 
 
 def test_patient_can_expire_consent_now(client, doctor):
@@ -284,7 +285,7 @@ def test_patient_can_expire_consent_now(client, doctor):
     consent_ref = client.get("/api/v1/portal/session").json()["consents"][0]["ref"]
 
     assert client.post(f"/api/v1/portal/consents/{consent_ref}/expire").json()["status"] == "EXPIRED"
-    assert doctor.get(f"/api/v1/doctor/patients/{demo_patient_ref(client)}/form").status_code == 403
+    assert doctor.get(f"/api/v1/doctor/patients/{case_of(demo_patient_ref(client))}/form").status_code == 403
 
 
 def send_and_consent(client, document="prescription", **kwargs):
@@ -309,8 +310,8 @@ def test_unknown_and_foreign_objects_look_the_same(doctor, patient_ref, client):
     assert unknown.status_code == not_mine.status_code == 403
     assert unknown.json() == not_mine.json()
 
-    assert doctor.get("/api/v1/doctor/patients/pt_doesnotexist0000000/form").json() == doctor.get(
-        f"/api/v1/doctor/patients/{other.ref}/form"
+    assert doctor.get("/api/v1/doctor/patients/CASE-ZZZZ-ZZZZ/form").json() == doctor.get(
+        f"/api/v1/doctor/patients/{case_of(other.ref)}/form"
     ).json()
 
 
@@ -340,7 +341,7 @@ def test_password_alone_is_not_enough(client):
 
 def test_role_separation(client, other_client, patient_ref):
     login(other_client, "auditor")
-    assert other_client.get(f"/api/v1/doctor/patients/{patient_ref}/form").status_code == 403
+    assert other_client.get(f"/api/v1/doctor/patients/{case_of(patient_ref)}/form").status_code == 403
     assert other_client.get("/api/v1/audit/events").status_code == 200
 
     login(client, "dr.example")
@@ -396,9 +397,9 @@ def test_bulk_access_anomaly(doctor, client, monkeypatch):
         grant_consent(patient.ref)
         refs.append(patient.ref)
 
-    assert doctor.get(f"/api/v1/doctor/patients/{refs[0]}/form").status_code == 200
-    assert doctor.get(f"/api/v1/doctor/patients/{refs[1]}/form").status_code == 200
-    assert doctor.get(f"/api/v1/doctor/patients/{refs[2]}/form").status_code == 403
+    assert doctor.get(f"/api/v1/doctor/patients/{case_of(refs[0])}/form").status_code == 200
+    assert doctor.get(f"/api/v1/doctor/patients/{case_of(refs[1])}/form").status_code == 200
+    assert doctor.get(f"/api/v1/doctor/patients/{case_of(refs[2])}/form").status_code == 403
 
 
 # ============================================================
@@ -442,7 +443,7 @@ def test_xss_payload_is_data_not_markup(doctor, patient_ref):
     payload = "Repeat HbA1c after 3 months <script>alert(1)</script>"
     ingest(patient_ref, make_pdf(f"Report Date: 15/06/2026\nHbA1c: 9.4 %\n{payload}\n"))
 
-    response = doctor.get(f"/api/v1/doctor/patients/{patient_ref}/loops")
+    response = doctor.get(f"/api/v1/doctor/patients/{case_of(patient_ref)}/loops")
 
     assert response.headers["content-type"] == "application/json"
     assert response.headers["x-content-type-options"] == "nosniff"
@@ -643,7 +644,7 @@ def test_identity_is_separate_from_medical_data(client, patient_ref):
     from app.database import engine
 
     columns = {column["name"] for column in inspect(engine).get_columns("patients")}
-    assert columns == {"id", "ref", "created_at"}
+    assert columns == {"id", "ref", "case_alias", "created_at"}
 
     idb = IdentitySessionLocal()
     try:
@@ -798,7 +799,7 @@ def test_no_phi_in_logs(client, doctor, caplog):
     consent_via_portal(client)
 
     patient_ref = demo_patient_ref(client)
-    doctor.get(f"/api/v1/doctor/patients/{patient_ref}/form")
+    doctor.get(f"/api/v1/doctor/patients/{case_of(patient_ref)}/form")
 
     logging.getLogger("jeevaflow.pipeline").info("Metformin 500 mg for patient 9876543210")
 
@@ -888,7 +889,7 @@ def test_audit_detects_deleted_tail(client):
 
 def test_audit_events_contain_no_phi(client, doctor):
     send_and_consent(client)
-    doctor.get(f"/api/v1/doctor/patients/{demo_patient_ref(client)}/form")
+    doctor.get(f"/api/v1/doctor/patients/{case_of(demo_patient_ref(client))}/form")
 
     db = SessionLocal()
     try:
@@ -954,11 +955,11 @@ def test_instruction_scope_does_not_reveal_lab_values(doctor, client):
     ingest(patient.ref, make_pdf(INITIAL_REPORT_TEXT))
     ingest(patient.ref, make_pdf(FOLLOWUP_REPORT_TEXT))
 
-    loops = doctor.get(f"/api/v1/doctor/patients/{patient.ref}/loops").json()
+    loops = doctor.get(f"/api/v1/doctor/patients/{case_of(patient.ref)}/loops").json()
     match = next(loop for loop in loops if loop["potential_matches"])["potential_matches"][0]
 
     assert match["observation"] is None and match["evidence"] is None
-    assert "8.1" not in doctor.get(f"/api/v1/doctor/patients/{patient.ref}/journey").text
+    assert "8.1" not in doctor.get(f"/api/v1/doctor/patients/{case_of(patient.ref)}/journey").text
 
 
 def test_uploads_stay_in_memory():

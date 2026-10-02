@@ -50,6 +50,20 @@ def new_ref(prefix: str) -> str:
     return f"{prefix}_{secrets.token_urlsafe(16)}"
 
 
+CASE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+
+def new_case_alias() -> str:
+    """
+    Doctor-facing case ID (CASE-XXXX-XXXX). Purely random: never
+    derived from name, phone or any other identity field.
+    """
+
+    chars = "".join(secrets.choice(CASE_ALPHABET) for _ in range(8))
+
+    return f"CASE-{chars[:4]}-{chars[4:]}"
+
+
 def derive_key(master: bytes, purpose: str) -> bytes:
     return HKDF(
         algorithm=hashes.SHA256(),

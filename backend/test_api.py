@@ -66,7 +66,7 @@ def main():
     patients = doctor.get(f"{BASE}/api/v1/doctor/patients").json()
     check(len(patients) == 1, "doctor sees only the consented patient")
 
-    form = doctor.get(f"{BASE}/api/v1/doctor/patients/{patients[0]['patient_ref']}/form").json()
+    form = doctor.get(f"{BASE}/api/v1/doctor/patients/{patients[0]['case_alias']}/form").json()
     check(any(m["label"] == "Metformin 500 mg" for m in form["medications"]), "doctor-ready form with medications")
 
     evidence_id = form["medications"][0]["evidence"]["evidence_id"]
@@ -76,7 +76,7 @@ def main():
     check(doctor.get(f"{BASE}/api/v1/doctor/evidence/view/{token}").status_code == 403, "evidence token is single use")
 
     patient.post(f"{BASE}/api/v1/portal/consents/{granted['consent']['ref']}/revoke")
-    denied = doctor.get(f"{BASE}/api/v1/doctor/patients/{patients[0]['patient_ref']}/form")
+    denied = doctor.get(f"{BASE}/api/v1/doctor/patients/{patients[0]['case_alias']}/form")
     check(denied.status_code == 403, "access denied immediately after revocation")
 
     staff(auditor, "auditor")
