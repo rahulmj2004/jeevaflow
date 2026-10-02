@@ -11,14 +11,8 @@ function Stat({ label, value, tone }: { label: string; value: number; tone?: str
 }
 
 export function PatientHeader({ journey }: { journey: Journey }) {
-  const name = journey.patient.name ?? "Name not shared";
-  const initials = journey.patient.name
-    ? journey.patient.name
-        .split(/\s+/)
-        .slice(0, 2)
-        .map((part) => part.charAt(0))
-        .join("")
-    : "··";
+  const name = `Case ${journey.patient.case_alias}`;
+  const initials = "··";
 
   return (
     <section className="card patient-header" aria-label="Patient">
@@ -30,8 +24,8 @@ export function PatientHeader({ journey }: { journey: Journey }) {
           <h2 className="patient-name">{name}</h2>
           <dl className="patient-meta">
             <div>
-              <dt>Patient reference</dt>
-              <dd className="mono">{journey.patient.ref}</dd>
+              <dt>Identity</dt>
+              <dd>Withheld (pseudonymized)</dd>
             </div>
             <div>
               <dt>Consent</dt>

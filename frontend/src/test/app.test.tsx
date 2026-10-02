@@ -87,7 +87,7 @@ function formFixture(): Form {
   });
   return {
     generated_at: "2026-10-02T10:00:00",
-    patient: { ref: "pt_synthetic", name: "Synthetic Patient", date_of_birth: "2004-01-01", demographics_shared: true },
+    patient: { case_alias: "CASE-TEST-0001", age_band: "20-29", demographics_shared: true },
     consent: { ref: "cns_1", purpose: "CLINICAL_REVIEW", scopes: ["MEDICATIONS", "LABS"], expires_at: "2026-10-09T10:00:00", can_view_source: false },
     not_shared: [{ scope: "ALLERGIES", label: "Allergies" }, { scope: "INSTRUCTIONS", label: "Doctor instructions and follow-ups" }],
     medications: [
@@ -244,7 +244,7 @@ describe("DoctorForm", () => {
 
     render(<DoctorForm patientRef="pt_synthetic" doctorName="Dr. Example (synthetic)" />);
 
-    expect(await screen.findByText("Synthetic Patient")).toBeInTheDocument();
+    expect(await screen.findByText("Case CASE-TEST-0001")).toBeInTheDocument();
     expect(screen.getAllByText("AI-inferred").length).toBeGreaterThan(0);
     expect(screen.getByText("Normalised from “1-0-1”.")).toBeInTheDocument();
     expect(screen.getAllByText("Not stated").length).toBe(2);
@@ -278,7 +278,7 @@ describe("App", () => {
         return {
           body: {
             csrf_token: "p",
-            patient: { ref: "pt_1", name: "Synthetic Patient", phone_masked: "+91********10" },
+            patient: { ref: "pt_1", case_alias: "CASE-TEST-0001", name: "Synthetic Patient", phone_masked: "+91********10" },
             transaction: { ref: "txn_SyntheticReference123", purpose: "UPLOAD", status: "VERIFIED", expires_at: "2026-10-02T10:30:00", pending_documents: 1 },
             consents: [],
             documents: [],
@@ -301,6 +301,7 @@ describe("App", () => {
     await userEvent.click(screen.getByRole("button", { name: "Verify" }));
 
     expect(await screen.findByText(/1 document waiting for your consent/)).toBeInTheDocument();
+    expect(screen.getByText("CASE-TEST-0001")).toBeInTheDocument();
     expect(window.location.search).toBe("");
     expect(screen.getByRole("button", { name: "Grant consent" })).toBeDisabled();
 

@@ -193,10 +193,10 @@ export function DoctorForm({ patientRef, doctorName }: { patientRef: string; doc
       <header className="brief-head">
         <div>
           <p className="brief-eyebrow">JeevaFlow · Doctor-ready form</p>
-          <h1 className="brief-name">{form.patient.name ?? "Name not shared"}</h1>
+          <h1 className="brief-name mono">Case {form.patient.case_alias}</h1>
           <p className="brief-meta">
-            Patient reference <span className="mono">{form.patient.ref}</span>
-            {form.patient.date_of_birth && ` · DOB ${formatDate(form.patient.date_of_birth)}`} · consent until{" "}
+            Identity withheld (pseudonymized)
+            {form.patient.age_band && ` · age ${form.patient.age_band}`} · consent until{" "}
             {formatDateTime(form.consent.expires_at)}
           </p>
         </div>

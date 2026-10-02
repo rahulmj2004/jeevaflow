@@ -113,7 +113,7 @@ function DoctorWorkspace({ user, onSignOut }: { user: StaffUser; onSignOut: () =
       .myPatients()
       .then((list) => {
         setPatients(list);
-        setSelected((current) => (current && list.some((p) => p.patient_ref === current) ? current : list[0]?.patient_ref ?? null));
+        setSelected((current) => (current && list.some((p) => p.case_alias === current) ? current : list[0]?.case_alias ?? null));
       })
       .catch((err: Error) => setError(err.message));
   }, []);
@@ -144,14 +144,13 @@ function DoctorWorkspace({ user, onSignOut }: { user: StaffUser; onSignOut: () =
         ) : (
           <ul className="patient-list">
             {patients.map((patient) => (
-              <li key={patient.patient_ref}>
+              <li key={patient.case_alias}>
                 <button
                   type="button"
-                  className={`patient-pick ${selected === patient.patient_ref ? "patient-pick-active" : ""}`}
-                  onClick={() => setSelected(patient.patient_ref)}
+                  className={`patient-pick ${selected === patient.case_alias ? "patient-pick-active" : ""}`}
+                  onClick={() => setSelected(patient.case_alias)}
                 >
-                  <strong>{patient.name ?? "Name not shared"}</strong>
-                  <span className="mono small">{patient.patient_ref}</span>
+                  <strong className="mono">Case {patient.case_alias}</strong>
                   <span className="small muted">
                     {patient.scopes.length} scopes · until {formatDateTime(patient.expires_at)}
                   </span>

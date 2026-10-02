@@ -422,6 +422,9 @@ a {
 .banner-warning { background: var(--warning-soft); color: #6e3d00; border-color: #f2d8ad; }
 .banner-success { background: var(--success-soft); color: #0f5129; border-color: #c2e5cd; }
 .banner-neutral { background: var(--neutral-soft); color: var(--text-2); border-color: var(--border); }
+.case-code { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
+.case-code strong { color: var(--text); font-size: 1.05em; letter-spacing: 0.04em; }
+.case-code-hint { color: var(--text-3); }
 
 .empty {
   padding: 22px 16px;

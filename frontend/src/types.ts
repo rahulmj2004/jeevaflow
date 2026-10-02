@@ -130,7 +130,7 @@ export interface JourneyDocument {
 }
 
 export interface Journey {
-  patient: { ref: string; name: string | null };
+  patient: { case_alias: string };
   consent: { ref: string; scopes: string[]; expires_at: string; status: string };
   summary: {
     document_count: number;
@@ -185,8 +185,7 @@ export interface StaffUser {
 }
 
 export interface ConsentedPatient {
-  patient_ref: string;
-  name: string | null;
+  case_alias: string;
   consent_ref: string;
   scopes: string[];
   expires_at: string;
@@ -246,7 +245,7 @@ export interface FormFlag {
 
 export interface DoctorForm {
   generated_at: string;
-  patient: { ref: string; name: string | null; date_of_birth: string | null; demographics_shared: boolean };
+  patient: { case_alias: string; age_band: string | null; demographics_shared: boolean };
   consent: { ref: string; purpose: string; scopes: string[]; expires_at: string; can_view_source: boolean };
   not_shared: { scope: string; label: string }[];
   medications: FormFact[] | null;
@@ -307,7 +306,7 @@ export interface PortalDocument {
 
 export interface PortalSession {
   csrf_token: string;
-  patient: { ref: string; name: string | null; phone_masked: string | null };
+  patient: { ref: string; case_alias: string; name: string | null; phone_masked: string | null };
   transaction: {
     ref: string;
     purpose: "UPLOAD" | "PORTAL_ACCESS";

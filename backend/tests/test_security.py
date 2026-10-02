@@ -121,6 +121,18 @@ def test_end_to_end_secure_flow(client, doctor):
     assert doctor.get("/api/v1/doctor/patients").json() == []
 
 
+def test_patient_sees_case_code_but_it_grants_no_access(client, doctor, other_client):
+    verify_portal(client, send_demo(client))
+    consent_via_portal(client, "dr.example")
+
+    case_alias = client.get("/api/v1/portal/session").json()["patient"]["case_alias"]
+    assert [item["case_alias"] for item in doctor.get("/api/v1/doctor/patients").json()] == [case_alias]
+
+    # Knowing the code is not enough: an unconsented doctor is still denied.
+    login(other_client, "dr.other")
+    assert other_client.get(f"/api/v1/doctor/patients/{case_alias}/form").status_code == 403
+
+
 def test_tampered_demo_signature_is_rejected(client):
     sent = client.post("/api/v1/demo/whatsapp", json={"document": "prescription", "tamper_signature": True}).json()
 

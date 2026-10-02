@@ -165,6 +165,15 @@ function PortalHome({
         </button>
       </div>
 
+      <div className="banner banner-neutral case-code" role="note">
+        <span>
+          Your case code: <strong className="mono">{session.patient.case_alias}</strong>
+        </span>
+        <span className="case-code-hint">
+          Show this to your doctor at the visit. Doctors see this code instead of your name.
+        </span>
+      </div>
+
       {error && <ErrorBanner message={error} />}
 
       {result?.processing && (

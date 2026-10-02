@@ -97,6 +97,11 @@ Patient → WhatsApp → Twilio → signed webhook → OTP → consent → secur
 - Plain HTTP locally. **Production:** `JEEVAFLOW_ENV=production` (HTTPS, Secure cookies, no demo mode, no API docs).
 - The frontend has no CSP of its own. **Production:** serve it with a strict CSP header.
 
+**Doctor-side pseudonymization (not anonymization).** Doctors see each patient only as a random case ID (`CASE-XXXX-XXXX`, generated with `secrets`, not derived from identity), plus an age band when demographics are shared. Doctor APIs and audit events use only that alias. Before free text reaches the doctor (quotes, notes, labels), `mask_pii()` (`security/masking.py`) replaces Indian phone numbers, labelled DOBs, ID numbers, name/address labels, honorifics, and the patient's own name and phone with `[MASKED]`. Provenance is still checked against the original text. The evidence viewer blacks out the same matches on the text layer or Tesseract word boxes and flattens the result into one PNG. If OCR or masking fails, it shows a "masking unavailable" placeholder instead.
+
+- **Limits:** masking is rule- and term-based. OCR misreads, unusual name formats, unlabelled free-text mentions (relatives, employer, village) and rare conditions or dates can still re-identify a patient. The output is not anonymized data.
+- **Production roadmap:** a reviewed NER model running locally, per-deployment rule tuning, a human-in-the-loop redaction check for exported material, and re-identification risk review.
+
 ## Patient journey
 
 The timeline merges **documents received**, **observations** (for example HbA1c 9.4%) and **doctor instructions**. Each item is dated by the report date found in the document (`Report Date: 15/06/2026`), falling back to the date received.

@@ -213,6 +213,10 @@ def session_overview(
         "csrf_token": csrf_for(request.cookies.get(PATIENT_COOKIE)),
         "patient": {
             "ref": patient.ref,
+            # The pseudonym the doctor sees, so the patient can show it
+            # at the visit. Grants nothing on its own: doctor access
+            # still requires this patient's active consent.
+            "case_alias": patient.case_alias,
             "name": identity.name if identity else None,
             "phone_masked": identity.phone_masked if identity else None,
         },
