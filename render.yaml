@@ -1,12 +1,59 @@
-services:
+cd ~/jeevaflow
+code render.yamlservices:
   - type: web
     name: jeevaflow-backend
     runtime: python
     rootDir: backend
+
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+
+    startCommand: python -m app
+
     envVars:
       - key: PYTHON_VERSION
         value: 3.11
-      - key: ENVIRONMENT
+
+      - key: JEEVAFLOW_ENV
         value: production
+
+      - key: JEEVAFLOW_DEMO_MODE
+        value: "false"
+
+      - key: JEEVAFLOW_KEK
+        sync: false
+
+      - key: JEEVAFLOW_IDENTITY_KEY
+        sync: false
+
+      - key: JEEVAFLOW_OTP_SECRET
+        sync: false
+
+      - key: JEEVAFLOW_AUDIT_KEY
+        sync: false
+
+      - key: JEEVAFLOW_SESSION_SECRET
+        sync: false
+
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+
+      - key: TWILIO_API_KEY_SID
+        sync: false
+
+      - key: TWILIO_API_KEY_SECRET
+        sync: false
+
+      - key: TWILIO_WHATSAPP_NUMBER
+        sync: false
+
+      - key: JEEVAFLOW_PORTAL_BASE_URL
+        sync: false
+
+      - key: JEEVAFLOW_CORS_ORIGINS
+        sync: false
+
+      - key: PUBLIC_BASE_URL
+        sync: false
