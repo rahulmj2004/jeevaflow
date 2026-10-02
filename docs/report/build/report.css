@@ -1,0 +1,298 @@
+/* JeevaFlow report — print stylesheet (A4). Header/footer are stamped by build_pdf.py. */
+
+:root {
+  --ink: #0f172a;
+  --muted: #475569;
+  --line: #d6dee8;
+  --teal: #0f766e;
+  --teal-d: #0b5a54;
+  --teal-l: #e6f4f1;
+  --blue: #1d4ed8;
+  --blue-l: #eaf1fe;
+  --amber: #b45309;
+  --amber-l: #fef3c7;
+  --red: #b91c1c;
+  --red-l: #fdecec;
+  --zebra: #f7f9fb;
+}
+
+@page { size: A4; margin: 19mm 15mm 16.5mm 15mm; }
+@page :first { margin: 0; }
+
+* { box-sizing: border-box; }
+
+html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+body {
+  margin: 0;
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-size: 8.95pt;
+  line-height: 1.42;
+  color: var(--ink);
+}
+
+.page-break { break-after: page; height: 0; }
+
+/* ---------------- Cover ---------------- */
+
+.cover {
+  height: 297mm;
+  width: 210mm;
+  padding: 30mm 22mm 20mm 22mm;
+  position: relative;
+  background:
+    linear-gradient(160deg, rgba(15,118,110,0.96) 0%, rgba(11,90,84,0.98) 46%, rgba(29,78,216,0.92) 100%);
+  color: #fff;
+  break-after: page;
+  overflow: hidden;
+}
+.cover::before {
+  content: "";
+  position: absolute;
+  right: -40mm;
+  top: 60mm;
+  width: 150mm;
+  height: 150mm;
+  border-radius: 50%;
+  border: 1.2px solid rgba(255,255,255,0.18);
+  box-shadow: 0 0 0 18mm rgba(255,255,255,0.04), 0 0 0 36mm rgba(255,255,255,0.03);
+}
+.cover-kicker {
+  font-size: 9.5pt;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  font-weight: 600;
+  opacity: 0.85;
+  border-left: 3px solid #5eead4;
+  padding-left: 10px;
+}
+.cover-title {
+  font-family: "Avenir Next", "Helvetica Neue", sans-serif;
+  font-weight: 700;
+  font-size: 58pt;
+  letter-spacing: 0.06em;
+  margin-top: 34mm;
+  line-height: 1;
+}
+.cover-subtitle {
+  font-family: "Avenir Next", "Helvetica Neue", sans-serif;
+  font-size: 19pt;
+  font-weight: 500;
+  margin-top: 8mm;
+  max-width: 150mm;
+  line-height: 1.25;
+}
+.cover-tagline {
+  font-size: 12.5pt;
+  font-style: italic;
+  margin-top: 7mm;
+  opacity: 0.92;
+  max-width: 150mm;
+}
+.cover-principle {
+  margin-top: 22mm;
+  font-size: 11pt;
+  font-weight: 600;
+  background: rgba(255,255,255,0.1);
+  border: 1px solid rgba(255,255,255,0.25);
+  border-radius: 8px;
+  padding: 5mm 6mm;
+  max-width: 128mm;
+  line-height: 1.55;
+}
+.cover-meta {
+  position: absolute;
+  left: 22mm;
+  right: 22mm;
+  bottom: 40mm;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4mm 10mm;
+  font-size: 10pt;
+}
+.cover-meta span {
+  display: block;
+  font-size: 7.6pt;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  opacity: 0.7;
+  margin-bottom: 1mm;
+}
+.cover-note {
+  position: absolute;
+  left: 22mm;
+  right: 22mm;
+  bottom: 16mm;
+  font-size: 8pt;
+  opacity: 0.8;
+  border-top: 1px solid rgba(255,255,255,0.3);
+  padding-top: 4mm;
+}
+
+/* ---------------- TOC ---------------- */
+
+.toc-title {
+  font-family: "Avenir Next", "Helvetica Neue", sans-serif;
+  font-size: 22pt;
+  margin: 0 0 6mm;
+  color: var(--teal-d);
+}
+.toc ol { list-style: none; margin: 0; padding: 0; columns: 1; }
+.toc li { margin: 0; border-bottom: 1px solid #edf1f5; }
+.toc a {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3.1px 0;
+  color: var(--ink);
+  text-decoration: none;
+  font-size: 9.8pt;
+}
+.toc-n { width: 22px; font-weight: 700; color: var(--teal); font-variant-numeric: tabular-nums; }
+.toc-t { white-space: nowrap; }
+.toc-dots { flex: 1; border-bottom: 1px dotted #b8c4d2; transform: translateY(-3px); }
+.toc-p { width: 24px; text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+.toc-un .toc-t { font-style: italic; }
+
+/* ---------------- Headings ---------------- */
+
+h2 {
+  font-family: "Avenir Next", "Helvetica Neue", sans-serif;
+  font-size: 17pt;
+  font-weight: 700;
+  color: var(--ink);
+  margin: 0 0 4mm;
+  padding-bottom: 2.5mm;
+  border-bottom: 2px solid var(--teal);
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  break-after: avoid;
+}
+h2 .sec-num {
+  color: #fff;
+  background: var(--teal);
+  border-radius: 6px;
+  font-size: 12pt;
+  padding: 1px 8px;
+  min-width: 26px;
+  text-align: center;
+}
+h2.unnumbered .sec-title { color: var(--teal-d); }
+h2:not(:first-child) { margin-top: 6mm; }
+.page-break + h2 { margin-top: 0; }
+/* Major parts start on a new page; the rest flow. */
+
+
+h3 {
+  font-family: "Avenir Next", "Helvetica Neue", sans-serif;
+  font-size: 11pt;
+  color: var(--teal-d);
+  margin: 4mm 0 1.6mm;
+  break-after: avoid;
+}
+
+p { margin: 0 0 2.4mm; }
+ul, ol { margin: 0 0 2.6mm; padding-left: 5mm; }
+li { margin: 0.6mm 0; }
+strong { font-weight: 700; }
+a { color: var(--blue); text-decoration: none; }
+
+code {
+  font-family: Menlo, "SF Mono", Consolas, monospace;
+  font-size: 0.86em;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  border-radius: 3px;
+  padding: 0 3px;
+  color: #0b4f4a;
+}
+
+/* ---------------- Tables ---------------- */
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 2mm 0 4mm;
+  font-size: 7.9pt;
+  line-height: 1.34;
+  page-break-inside: auto;
+}
+thead { display: table-header-group; }
+tr { break-inside: avoid; }
+th {
+  background: var(--teal-l);
+  color: var(--teal-d);
+  text-align: left;
+  font-weight: 700;
+  padding: 3.4px 5px;
+  border-bottom: 1.5px solid var(--teal);
+  font-size: 7.8pt;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+td { padding: 2.8px 5px; border-bottom: 1px solid var(--line); vertical-align: top; }
+tbody tr:nth-child(even) td { background: var(--zebra); }
+td code { word-break: break-word; font-size: 0.84em; }
+td:first-child code { white-space: nowrap; }
+
+/* API table: many rows, keep compact */
+table.api { font-size: 7.1pt; }
+table.api td { padding: 2.4px 5px; }
+table.threat { font-size: 7.6pt; }
+
+/* ---------------- Callouts ---------------- */
+
+.callout {
+  background: var(--teal-l);
+  border-left: 4px solid var(--teal);
+  border-radius: 0 6px 6px 0;
+  padding: 3mm 4mm;
+  margin: 2mm 0 4mm;
+  break-inside: avoid;
+}
+.callout.warn { background: var(--amber-l); border-left-color: var(--amber); }
+.callout ul { margin: 1.5mm 0 0; }
+.principle {
+  font-family: "Avenir Next", "Helvetica Neue", sans-serif;
+  font-size: 12pt;
+  font-weight: 600;
+  color: var(--teal-d);
+  text-align: center;
+  border-top: 1px solid var(--teal);
+  border-bottom: 1px solid var(--teal);
+  padding: 3mm 0;
+  margin: 3mm 0 4mm;
+}
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 4mm; }
+.two-col .callout { margin: 0 0 3mm; }
+
+/* ---------------- Figures ---------------- */
+
+figure.diagram { margin: 2mm 0 1mm; break-inside: avoid; text-align: center; }
+figure.diagram img { width: 100%; height: auto; max-height: 96mm; object-fit: contain; }
+figure.diagram img[alt="System architecture"] { max-height: 205mm; }
+figure.diagram img[alt="Defense in depth"] { max-height: 150mm; }
+figure.diagram img[alt="Doctor-ready form flow"] { max-height: 110mm; }
+.figure-row { margin: 2mm 0 1mm; text-align: center; break-inside: avoid; }
+.figure-row img {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.08);
+}
+.figure-row img { max-height: 66mm; object-fit: contain; }
+.figure-row.narrow img { width: 60%; }
+.figure-row.small img { width: 44%; }
+.caption {
+  font-size: 7.8pt;
+  color: var(--muted);
+  font-style: italic;
+  text-align: center;
+  margin: 1mm 0 4mm;
+}
+
+/* API table: give endpoints room so paths wrap less */
+table.api th:nth-child(3),
+table.api td:nth-child(3) { width: 36%; }
+table.api td:nth-child(3) code { font-size: 0.8em; }

@@ -1,0 +1,15 @@
+fastapi
+uvicorn[standard]
+python-multipart
+pydantic
+pydantic-settings
+sqlalchemy
+pymupdf
+pillow
+opencv-python
+numpy
+pytesseract
+cryptography
+httpx
+python-dotenv
+pytest
