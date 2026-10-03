@@ -3,6 +3,7 @@ import { api, ApiError } from "../api";
 import { Conflicts } from "../components/Conflicts";
 import { DoctorForm } from "../components/DoctorForm";
 import { DocumentsList } from "../components/DocumentsList";
+import { EvidenceFinder } from "../components/EvidenceFinder";
 import { EvidenceViewer, type EvidenceSelection } from "../components/EvidenceViewer";
 import { OpenLoops } from "../components/OpenLoops";
 import { PatientHeader } from "../components/PatientHeader";
@@ -255,6 +256,12 @@ function JourneyView({ patientRef, onDenied }: { patientRef: string; onDenied: (
           <Card title="Open loops" subtitle="Documented instructions, tracked until a doctor confirms follow-through.">
             <OpenLoops loops={journey.open_loops} onChanged={refresh} onInspect={setSelection} />
           </Card>
+
+          {journey.consent.scopes.includes("LABS") && (
+            <Card title="Find evidence" subtitle="AI ranks this record’s quoted results for a test you name, or abstains.">
+              <EvidenceFinder patientRef={patientRef} onInspect={setSelection} />
+            </Card>
+          )}
 
           <Card title="Patient timeline" subtitle="Every item links to the exact source quote it was read from.">
             <Timeline items={journey.timeline} selectedKey={selection?.key ?? null} onSelect={selectTimelineItem} />

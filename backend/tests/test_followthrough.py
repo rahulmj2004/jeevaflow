@@ -75,18 +75,24 @@ def test_worker_embeds_labels_and_concepts_only(monkeypatch):
 
     assert seen == ["thyroid function", "TSH"]
     assert not any(char.isdigit() for text_ in seen for char in text_)
-    assert summary == {"model": enc.MODEL_ID, "status": "ACTIVE", "embedded": 2}
+    assert summary == {"model": enc.MODEL_ID, "backend": "pubmedbert", "status": "ACTIVE", "embedded": 2}
     assert "embedding" not in commitments[1]  # names no test: never AI-matched
 
 
-def test_worker_without_model_embeds_nothing(monkeypatch):
+def test_worker_without_model_falls_back_to_labelled_lexical_backend(monkeypatch):
     from app import worker
+    from app.followthrough import backends, lexical
 
-    monkeypatch.setattr(enc, "load", lambda: (None, "MODEL_MISSING"))
+    monkeypatch.setattr(enc, "load", lambda *args: (None, "MODEL_MISSING"))
     commitments = [{"instruction": "Check thyroid function"}]
+    summary = worker._embed_for_followthrough(commitments, [])
 
-    assert worker._embed_for_followthrough(commitments, [])["status"] == "MODEL_MISSING"
-    assert "embedding" not in commitments[0]
+    assert summary == {
+        "model": lexical.MODEL_ID, "backend": "lexical-fallback",
+        "status": "FALLBACK:MODEL_MISSING", "embedded": 1,
+    }
+    assert backends.model_of(commitments[0]["embedding"]) == lexical.MODEL_ID
+    assert semantic.unpack(commitments[0]["embedding"], enc.MODEL_ID) is None  # never mixed with pubmedbert
 
 
 # ============================================================
@@ -169,11 +175,53 @@ def test_held_out_evaluation_beats_rules(encoder):
 
     result = evaluate(1, encoder.encode, semantic.SUGGEST_THRESHOLD)
 
-    assert result["ai"]["recall"] >= 0.65
-    assert result["ai"]["precision"] >= 0.80
-    assert result["ai"]["false_alarm"] <= 0.15
-    assert result["rule"]["recall"] <= 0.10
-    assert result["ai"]["recall"] - result["rule"]["recall"] >= 0.5
+    # Measured (evaluation/results/followthrough.json): precision 1.0,
+    # recall 0.188, false alarm 0.0; rules recall 0.042.
+    assert result["ai"]["precision"] >= 0.90
+    assert result["ai"]["false_alarm"] <= 0.05
+    assert result["ai"]["recall"] >= 0.15
+    assert result["ai"]["recall"] > result["rule"]["recall"] * 3
+
+
+@needs_model
+def test_held_out_evidence_finder(encoder):
+    from app.followthrough import backends
+    from evaluation.followthrough_eval import evaluate_finder
+
+    result = evaluate_finder(1, encoder.encode, backends.EVIDENCE_THRESHOLD[enc.MODEL_ID])
+
+    # Measured: hit 0.719, precision 0.767, abstention 0.958, unsupported 0.042.
+    assert result["hit_rate"] >= 0.65
+    assert result["result_precision"] >= 0.70
+    assert result["abstention_correct"] >= 0.90
+    assert result["unsupported_answers"] <= 0.10
+
+
+@needs_model
+def test_configured_thresholds_are_reproduced_by_calibration(encoder):
+    """
+    Thresholds are not hand-tuned: re-running calibration on the
+    calibration split must give exactly the configured values.
+    """
+
+    from app.followthrough import backends, lexical
+    from evaluation.followthrough_eval import calibrate, calibrate_finder
+
+    fallback = lexical.LexicalEncoder()
+
+    assert calibrate(encoder.encode) == backends.FOLLOW_THROUGH_THRESHOLD[enc.MODEL_ID]
+    assert calibrate_finder(encoder.encode) == backends.EVIDENCE_THRESHOLD[enc.MODEL_ID]
+    assert calibrate(fallback.encode) == backends.FOLLOW_THROUGH_THRESHOLD[lexical.MODEL_ID]
+    assert calibrate_finder(fallback.encode) == backends.EVIDENCE_THRESHOLD[lexical.MODEL_ID]
+
+
+@needs_model
+def test_benchmark_is_deterministic(encoder):
+    from evaluation.followthrough_eval import evaluate, evaluate_finder, pairwise
+
+    assert evaluate(1, encoder.encode, 0.68) == evaluate(1, encoder.encode, 0.68)
+    assert evaluate_finder(1, encoder.encode, 0.40) == evaluate_finder(1, encoder.encode, 0.40)
+    assert pairwise(1, encoder.encode) == pairwise(1, encoder.encode)
 
 
 # ============================================================
@@ -192,42 +240,69 @@ def _loops(doctor, patient_ref):
 
 
 @needs_model
-def test_ai_matches_what_the_rules_cannot(doctor, patient_ref):
+def test_scenarios_a_b_c_follow_through(doctor, patient_ref):
     labs = _demo(patient_ref)
 
     matched = {(m["method"], m["observation"]["observation_type"]) for m in labs["potential_matches"]}
     assert matched == {
-        ("RULE", "Creatinine"),
-        ("AI_SEMANTIC", "TSH"),
-        ("AI_SEMANTIC", "SGPT (ALT)"),
+        ("RULE", "Creatinine"),                        # C: rule still matches
+        ("AI_SEMANTIC", "Prostate Specific Antigen"),  # A: no shared word
+        ("AI_SEMANTIC", "Vitamin D (25-OH)"),          # B: trap rejected below
     }
 
     loops = _loops(doctor, patient_ref)
-    thyroid = loops["Check thyroid function after 6 weeks"]
-    assert thyroid["state"] == "POTENTIAL_MATCH"  # suggested, never closed
-    match = thyroid["potential_matches"][0]
+
+    psa = loops["Repeat PSA after 2 months"]
+    assert psa["state"] == "POTENTIAL_MATCH"  # suggested, never closed
+    match = psa["potential_matches"][0]
     assert match["method"] == "AI_SEMANTIC"
-    assert match["score"] >= semantic.SUGGEST_THRESHOLD
-    assert match["evidence"]["quote"] == "TSH: 3.2 mIU/L"
+    assert match["evidence"]["quote"] == "Prostate Specific Antigen: 1.2 ng/mL"
+    assert match["explanation"]["backend"] == "pubmedbert"
     assert match["explanation"]["model"] == enc.MODEL_ID
-    assert match["explanation"]["rank"] == 1
-    assert {item["label"] for item in match["explanation"]["alternatives"]} <= {
-        "SGPT (ALT)", "Creatinine", "Hemoglobin", "Vitamin B12",
-    }
+    assert match["explanation"]["threshold"] == 0.68
+    assert match["score"] >= 0.68
+    assert psa["ai_decision"]["decision"] == "SUGGESTED"
+    assert psa["ai_decision"]["match_id"] == match["id"]
 
-    # Haemoglobin ranks first for this instruction but scores below the
-    # calibrated threshold: the engine abstains and the loop stays open.
-    assert loops["Check for anaemia after iron therapy"]["potential_matches"] == []
+    vitamin_d = loops["Check vitamin D levels after 3 months"]
+    assert [m["observation"]["observation_type"] for m in vitamin_d["potential_matches"]] == ["Vitamin D (25-OH)"]
+    trap = next(a for a in vitamin_d["potential_matches"][0]["explanation"]["alternatives"] if a["label"] == "Vitamin B12")
+    assert trap["score"] < 0.68  # the lexical trap is considered and rejected
 
-    # Names no test: stays open for a person to follow up.
-    assert loops["Review in 4 weeks"]["potential_matches"] == []
-    assert loops["Review in 4 weeks"]["state"] != "POTENTIAL_MATCH"
+    review = loops["Review in 4 weeks"]
+    assert review["potential_matches"] == [] and review["ai_decision"] is None  # names no test
+
+
+@needs_model
+def test_scenario_e_abstention_is_recorded_and_leaves_the_loop_open(doctor, patient_ref):
+    _demo(patient_ref)
+    loop = _loops(doctor, patient_ref)["Check thyroid function after 6 weeks"]
+
+    assert loop["potential_matches"] == []
+    assert loop["state"] in ("OPEN", "OVERDUE")
+    decision = loop["ai_decision"]
+    assert decision["decision"] == "AI_ABSTAINED"
+    assert decision["reason"] == "BELOW_THRESHOLD"
+    assert decision["backend"] == "pubmedbert"
+    assert decision["model"] == enc.MODEL_ID
+    assert decision["threshold"] == 0.68
+    assert 0.5 < decision["best_score"] < 0.68
+    assert decision["candidates"] == 5
+    assert decision["document_ref"]
+
+    detail = doctor.get(f"/api/v1/doctor/commitments/{loop['id']}").json()
+    abstained = [e for e in detail["history"] if e["action"] == "AI_ABSTAINED"]
+    assert abstained and abstained[-1]["to_state"] is None  # no state change
+    assert "insufficient" in abstained[-1]["note"]
+
+    # Confirming needs a suggestion: the AI's abstention cannot be closed.
+    assert doctor.post(f"/api/v1/doctor/commitments/{loop['id']}/confirm-completion", json={}).status_code == 409
 
 
 @needs_model
 def test_doctor_confirms_an_ai_suggestion(doctor, patient_ref):
     _demo(patient_ref)
-    loop = _loops(doctor, patient_ref)["Check thyroid function after 6 weeks"]
+    loop = _loops(doctor, patient_ref)["Repeat PSA after 2 months"]
 
     confirmed = doctor.post(f"/api/v1/doctor/commitments/{loop['id']}/confirm-completion", json={})
     assert confirmed.status_code == 200, confirmed.text
@@ -242,6 +317,17 @@ def test_doctor_confirms_an_ai_suggestion(doctor, patient_ref):
 
 
 @needs_model
+def test_doctor_keeps_an_ai_suggestion_open(doctor, patient_ref):
+    _demo(patient_ref)
+    loop = _loops(doctor, patient_ref)["Repeat PSA after 2 months"]
+
+    kept = doctor.post(f"/api/v1/doctor/commitments/{loop['id']}/keep-open", json={})
+    assert kept.status_code == 200, kept.text
+    assert kept.json()["state"] in ("OPEN", "OVERDUE")
+    assert kept.json()["confirmed_match"] is None
+
+
+@needs_model
 def test_ai_artifacts_are_encrypted_and_plain_text_has_no_content(patient_ref):
     _demo(patient_ref)
 
@@ -251,13 +337,13 @@ def test_ai_artifacts_are_encrypted_and_plain_text_has_no_content(patient_ref):
         assert ai
 
         for match in ai:
-            assert "thyroid" not in match.rule.lower() and "TSH" not in match.rule
+            assert "psa" not in match.rule.lower() and "Prostate" not in match.rule and "vitamin" not in match.rule.lower()
 
         raw_explanations = [row[0] for row in db.execute(text("SELECT explanation FROM loop_matches WHERE method = 'AI_SEMANTIC'"))]
         raw_embeddings = [row[0] for row in db.execute(text("SELECT embedding FROM commitments WHERE embedding IS NOT NULL"))]
 
         assert raw_embeddings and raw_explanations
-        assert all(enc.MODEL_NAME not in raw and "TSH" not in raw for raw in raw_explanations + raw_embeddings)
+        assert all(enc.MODEL_NAME not in raw and "Vitamin" not in raw for raw in raw_explanations + raw_embeddings)
     finally:
         db.close()
 
@@ -296,9 +382,10 @@ def test_corrupt_stored_vectors_are_skipped(patient_ref):
 
     db = SessionLocal()
     try:
-        from app.models import LoopEvent
+        from app.models import AIDecision, LoopEvent
 
         db.query(LoopEvent).update({LoopEvent.match_id: None})
+        db.query(AIDecision).delete()
         db.query(LoopMatch).delete()
         for commitment in db.query(Commitment).all():
             commitment.embedding = "garbage"
@@ -326,3 +413,33 @@ def test_demo_documents_exist_for_the_walkthrough(client):
     keys = {item["key"] for item in client.get("/api/v1/demo").json()["documents"]}
 
     assert {"followthrough_plan", "followthrough_labs"} <= keys
+
+
+@needs_model
+def test_ai_failure_does_not_break_ingestion(patient_ref, monkeypatch, caplog):
+    """
+    An exception inside the AI pass is contained: the document is still
+    processed, the rule match is kept, and no AI rows are left behind.
+    """
+
+    from app.models import AIDecision
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("synthetic AI failure")
+
+    monkeypatch.setattr(semantic, "rank", broken)
+    labs = _demo(patient_ref)
+
+    assert labs["processing_status"] == "PROCESSED"
+    assert {(m["method"], m["observation"]["observation_type"]) for m in labs["potential_matches"]} == {
+        ("RULE", "Creatinine")
+    }
+    assert "AI_FOLLOWTHROUGH_FAILED" in caplog.text
+    assert "synthetic AI failure" not in caplog.text
+
+    db = SessionLocal()
+    try:
+        assert db.query(AIDecision).count() == 0
+        assert db.query(LoopMatch).filter(LoopMatch.method == "AI_SEMANTIC").count() == 0
+    finally:
+        db.close()

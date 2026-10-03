@@ -2237,3 +2237,18 @@ a {
 .ai-bar-chosen .ai-bar-label { color: var(--text); font-weight: 600; }
 .ai-bar-threshold { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--warning); }
 .ai-bar-score { text-align: right; color: var(--text-2); }
+
+/* AI abstention + evidence finder */
+.ai-abstained { margin: 10px 0; padding: 8px 12px; border: 1px dashed var(--border-strong); border-radius: var(--radius-sm); background: var(--surface-2); }
+.finder-form { display: flex; gap: 8px; flex-wrap: wrap; }
+.finder-form .input {
+  flex: 1 1 220px; min-width: 0; padding: 7px 10px; border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm); background: var(--surface); color: var(--text); font-size: 0.9rem;
+}
+.finder-form .input:focus { outline: 2px solid var(--brand); outline-offset: 1px; }
+.finder-examples .link-button + .link-button { margin-left: 10px; }
+.finder-results { list-style: none; margin: 8px 0; padding: 0; display: grid; gap: 8px; }
+.finder-result { display: grid; gap: 2px; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); }
+.finder-quote { text-align: left; font-family: var(--mono); }
+.finder-state { margin-left: 6px; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }

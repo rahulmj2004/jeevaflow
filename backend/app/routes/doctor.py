@@ -31,15 +31,20 @@ from ..conflicts import detect_observation_conflicts
 from ..database import get_db
 from ..doctor_brief import build_doctor_form
 from ..identity import get_identity, get_identity_db
+from ..followthrough import backends as ai_backends
+from ..followthrough import semantic
+from ..followthrough.text import query_concept
 from ..loops import (
     LoopActionError,
     confirm_completion,
     get_open_loops,
     keep_open,
+    load_evidence,
     mark_needs_review,
     serialize_loop,
 )
 from ..models import (
+    AIDecision,
     ClinicalFact,
     Commitment,
     Consent,
@@ -57,7 +62,7 @@ from ..provenance import serialize_evidence
 from ..security import audit
 from ..security.auth import GENERIC_FORBIDDEN, StaffPrincipal, require_doctor
 from ..security.consent import authorize_doctor, consent_status, scopes_of
-from ..security.crypto import keyed_hash
+from ..security.crypto import keyed_hash, new_ref
 from ..security.masking import identity_terms, mask_tree
 from ..timeline import get_patient_timeline
 from ..worker_client import WorkerError, decode, run_worker
@@ -252,6 +257,131 @@ def loops(
     patient, consent = authorize_doctor(db, principal, case_alias, "INSTRUCTIONS")
 
     return mask_tree(_scoped_loops(get_open_loops(db=db, patient_id=patient.id), scopes_of(consent)), _terms(idb, patient))
+
+
+class EvidenceQuery(BaseModel):
+    query: str = Field(..., min_length=1, max_length=120)
+
+
+EVIDENCE_RESULTS_SHOWN = 5
+
+
+@router.post("/patients/{case_alias}/evidence-finder")
+def evidence_finder(
+    case_alias: str,
+    body: EvidenceQuery,
+    principal: StaffPrincipal = Depends(require_doctor),
+    db: Session = Depends(get_db),
+    idb: Session = Depends(get_identity_db),
+):
+    """
+    AI evidence finder: rank THIS case's consented, source-quoted lab
+    results against a doctor's query concept. Returns cited results
+    above the calibrated threshold, or AI_ABSTAINED. It never
+    generates text. The query is not stored or logged.
+    """
+
+    patient, _ = authorize_doctor(db, principal, case_alias, "LABS")
+    concept = query_concept(body.query)
+
+    # Same visibility as the doctor form: this case only, PROCESSED
+    # documents only, not rejected, with source evidence.
+    observations = (
+        db.query(Observation)
+        .join(Document, Document.id == Observation.document_id)
+        .filter(
+            Observation.patient_id == patient.id,
+            Document.patient_id == patient.id,
+            Document.processing_status == "PROCESSED",
+            Observation.evidence_id.isnot(None),
+            Observation.embedding.isnot(None),
+            Observation.review_status != "REJECTED",
+        )
+        .all()
+    )
+
+    outcome = {
+        "feature": "EVIDENCE_FINDER", "decision": "AI_ABSTAINED", "reason": None,
+        "backend": None, "model": None, "threshold": None, "best_score": None,
+        "candidates": 0, "results": [],
+    }
+
+    def finish():
+        db.add(AIDecision(
+            ref=new_ref("aid"), feature="EVIDENCE_FINDER", patient_id=patient.id,
+            actor_ref=principal.user_ref, decision=outcome["decision"], reason=outcome["reason"],
+            backend=outcome["backend"], model_id=outcome["model"], best_score=outcome["best_score"],
+            threshold=outcome["threshold"], candidates=outcome["candidates"], results=len(outcome["results"]),
+        ))
+        audit.record(
+            db, "AI_EVIDENCE_QUERY", actor_type="STAFF", actor_ref=principal.user_ref,
+            object_type="CASE", object_ref=patient.case_alias,
+            result="SUCCESS" if outcome["decision"] == "ANSWERED" else "ABSTAINED",
+            reason=f"{outcome['decision']}:{outcome['reason'] or len(outcome['results'])}",
+        )
+        db.commit()
+        return mask_tree(outcome, _terms(idb, patient))
+
+    if not concept:
+        outcome["reason"] = "QUERY_NAMES_NO_TEST"
+        return finish()
+
+    if not observations:
+        outcome["reason"] = "NO_CANDIDATES"
+        return finish()
+
+    try:
+        embedded = run_worker("embed", b"", "text/plain", texts=[concept])
+        model_id = embedded["model"]
+        query_vector = semantic.unpack(embedded["vectors"][0], model_id)
+    except (WorkerError, KeyError, IndexError, TypeError):
+        outcome["reason"] = "MODEL_UNAVAILABLE"
+        return finish()
+
+    outcome.update(backend=ai_backends.BACKEND_OF.get(model_id), model=model_id)
+    candidates = [
+        (observation.id, observation.observation_type, semantic.unpack(observation.embedding, model_id))
+        for observation in observations
+    ]
+    candidates = [item for item in candidates if item[2] is not None]
+    outcome["candidates"] = len(candidates)
+
+    if query_vector is None or not candidates:
+        outcome["reason"] = "NO_COMPARABLE_CANDIDATES"
+        return finish()
+
+    threshold = ai_backends.EVIDENCE_THRESHOLD[model_id]
+    scored = semantic.rank(query_vector, candidates, threshold)
+    outcome.update(threshold=threshold, best_score=scored[0]["score"])
+
+    by_id = {observation.id: observation for observation in observations}
+    above = [item for item in scored if item["score"] >= threshold]
+
+    def newest_first(item):
+        observation = by_id[item["key"]]
+        return (-item["score"], -(observation.event_date.toordinal() if observation.event_date else 0))
+
+    for item in sorted(above, key=newest_first)[:EVIDENCE_RESULTS_SHOWN]:
+        observation = by_id[item["key"]]
+        outcome["results"].append({
+            "observation_id": observation.id,
+            "observation_type": observation.observation_type,
+            "value": observation.value,
+            "unit": observation.unit,
+            "date": observation.event_date,
+            "score": item["score"],
+            "rank": item["rank"],
+            "fact_state": observation.fact_state,
+            "review_status": observation.review_status,
+            "evidence": load_evidence(db, observation.evidence_id),
+        })
+
+    if outcome["results"]:
+        outcome["decision"] = "ANSWERED"
+    else:
+        outcome["reason"] = "BELOW_THRESHOLD"
+
+    return finish()
 
 
 @router.get("/patients/{case_alias}/conflicts")

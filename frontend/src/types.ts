@@ -50,8 +50,52 @@ export interface TimelineItem {
   created_at: string | null;
 }
 
+export type AIBackend = "pubmedbert" | "lexical-fallback";
+
+export interface AIDecisionInfo {
+  ref: string;
+  feature: "FOLLOW_THROUGH" | "EVIDENCE_FINDER";
+  decision: "SUGGESTED" | "AI_ABSTAINED" | "ANSWERED";
+  reason: string | null;
+  backend: AIBackend | null;
+  model: string | null;
+  best_score: number | null;
+  threshold: number | null;
+  candidates: number;
+  document_ref: string | null;
+  document_date: string | null;
+  match_id: number | null;
+  created_at: string;
+}
+
+export interface EvidenceFinderResult {
+  observation_id: number;
+  observation_type: string;
+  value: string;
+  unit: string | null;
+  date: string | null;
+  score: number;
+  rank: number;
+  fact_state: string;
+  review_status: string;
+  evidence: Evidence | null;
+}
+
+export interface EvidenceFinderResponse {
+  feature: "EVIDENCE_FINDER";
+  decision: "ANSWERED" | "AI_ABSTAINED";
+  reason: string | null;
+  backend: AIBackend | null;
+  model: string | null;
+  threshold: number | null;
+  best_score: number | null;
+  candidates: number;
+  results: EvidenceFinderResult[];
+}
+
 export interface MatchExplanation {
   method: "AI_SEMANTIC";
+  backend?: AIBackend;
   model: string;
   score: number;
   rank: number;
@@ -108,6 +152,7 @@ export interface OpenLoop {
   evidence: Evidence | null;
   potential_matches: LoopMatch[];
   confirmed_match: LoopMatch | null;
+  ai_decision?: AIDecisionInfo | null;
   history?: LoopHistoryEntry[];
   created_at: string;
   updated_at: string;

@@ -319,6 +319,40 @@ class LoopMatch(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 
+class AIDecision(Base):
+    """
+    Provenance for every AI decision, including abstentions:
+    which feature, which loop / document / case, which backend and
+    model, the best score against the calibrated threshold, and the
+    outcome. Holds no free text (no query, label or quote), so it is
+    not encrypted.
+    """
+
+    __tablename__ = "ai_decisions"
+
+    id = Column(Integer, primary_key=True)
+    ref = Column(String(40), unique=True, nullable=False, index=True)
+    # FOLLOW_THROUGH | EVIDENCE_FINDER
+    feature = Column(String(30), nullable=False)
+    patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False, index=True)
+    commitment_id = Column(Integer, ForeignKey("commitments.id"), nullable=True, index=True)
+    # The newer document whose results were considered (follow-through).
+    document_id = Column(Integer, ForeignKey("documents.id"), nullable=True)
+    match_id = Column(Integer, ForeignKey("loop_matches.id"), nullable=True)
+    actor_ref = Column(String(40), nullable=True)
+    # SUGGESTED | AI_ABSTAINED | ANSWERED
+    decision = Column(String(20), nullable=False)
+    # BELOW_THRESHOLD | NO_CANDIDATES | NO_COMPARABLE_CANDIDATES | None
+    reason = Column(String(40), nullable=True)
+    backend = Column(String(30), nullable=True)
+    model_id = Column(String(60), nullable=True)
+    best_score = Column(Float, nullable=True)
+    threshold = Column(Float, nullable=True)
+    candidates = Column(Integer, default=0, nullable=False)
+    results = Column(Integer, default=0, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
 class LoopEvent(Base):
     """
     Open Loop state history (system and human decisions).

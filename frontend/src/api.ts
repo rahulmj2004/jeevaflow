@@ -4,6 +4,7 @@ import type {
   DemoInfo,
   DoctorForm,
   Evidence,
+  EvidenceFinderResponse,
   IngestionResult,
   Journey,
   OpenLoop,
@@ -157,6 +158,8 @@ export const api = {
   confirmCompletion: (id: number, matchId?: number) =>
     post<OpenLoop>(`/api/v1/doctor/commitments/${id}/confirm-completion`, { match_id: matchId }, "staff"),
   keepOpen: (id: number) => post<OpenLoop>(`/api/v1/doctor/commitments/${id}/keep-open`, {}, "staff"),
+  evidenceFinder: (ref: string, query: string) =>
+    post<EvidenceFinderResponse>(`/api/v1/doctor/patients/${enc(ref)}/evidence-finder`, { query }, "staff"),
   flagForReview: (id: number) => post<OpenLoop>(`/api/v1/doctor/commitments/${id}/review`, {}, "staff"),
   evidence: (id: number) => request<Evidence>(`/api/v1/doctor/evidence/${id}`),
   verifyObservation: (id: number) => post(`/api/v1/doctor/observations/${id}/verify`, undefined, "staff", "PATCH"),

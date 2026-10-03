@@ -5,7 +5,8 @@ import App from "../App";
 import { setCsrf } from "../api";
 import { DoctorForm, DriftAlert } from "../components/DoctorForm";
 import { buildSteps } from "../components/DocumentUpload";
-import { AiMatchExplanation, OpenLoops } from "../components/OpenLoops";
+import { AiAbstained, AiMatchExplanation, OpenLoops } from "../components/OpenLoops";
+import { EvidenceFinder } from "../components/EvidenceFinder";
 import { StaffLogin } from "../components/StaffLogin";
 import { DemoConsole } from "../pages/DemoConsole";
 import { formatDate, formatValue, statusLabel, toneFor } from "../format";
@@ -504,5 +505,115 @@ describe("AiMatchExplanation", () => {
     expect(screen.getByText("SGPT (ALT)")).toBeInTheDocument();
     expect(screen.getByText(/at least 0.34/)).toBeInTheDocument();
     expect(screen.getByText(/A suggestion, not a decision/)).toBeInTheDocument();
+  });
+});
+
+describe("AiAbstained", () => {
+  it("explains the abstention with its provenance and keeps the loop open", () => {
+    render(
+      <AiAbstained
+        decision={{
+          ref: "aid_1",
+          feature: "FOLLOW_THROUGH",
+          decision: "AI_ABSTAINED",
+          reason: "BELOW_THRESHOLD",
+          backend: "pubmedbert",
+          model: "pubmedbert-base-embeddings@b79526d",
+          best_score: 0.645,
+          threshold: 0.68,
+          candidates: 5,
+          document_ref: "doc_x",
+          document_date: "2026-12-28",
+          match_id: null,
+          created_at: "2026-12-28T10:00:00",
+        }}
+      />,
+    );
+
+    expect(screen.getByText("AI_ABSTAINED")).toBeInTheDocument();
+    expect(screen.getByLabelText("AI abstained")).toHaveTextContent(
+      "AI abstained because available evidence was insufficient",
+    );
+    expect(screen.getByLabelText("AI abstained")).toHaveTextContent("The loop stays open.");
+    expect(screen.getByText(/Best candidate scored 0.65 against a threshold of 0.68/)).toBeInTheDocument();
+  });
+});
+
+describe("EvidenceFinder", () => {
+  const answered = {
+    feature: "EVIDENCE_FINDER",
+    decision: "ANSWERED",
+    reason: null,
+    backend: "pubmedbert",
+    model: "pubmedbert-base-embeddings@b79526d",
+    threshold: 0.4,
+    best_score: 0.71,
+    candidates: 5,
+    results: [
+      {
+        observation_id: 3,
+        observation_type: "TSH",
+        value: "3.2",
+        unit: "mIU/L",
+        date: "2026-12-28",
+        score: 0.71,
+        rank: 1,
+        fact_state: "SOURCE_FACT",
+        review_status: "REVIEW",
+        evidence: evidence(3, "TSH: 3.2 mIU/L", "WEB"),
+      },
+    ],
+  };
+
+  it("shows cited evidence and opens it in the evidence viewer", async () => {
+    setCsrf("staff", "csrf-123");
+    const fetchMock = mockFetch((url) => (url.endsWith("/evidence-finder") ? { body: answered } : undefined));
+    const onInspect = vi.fn();
+
+    render(<EvidenceFinder patientRef="CASE-TEST-0001" onInspect={onInspect} />);
+    await userEvent.type(screen.getByLabelText("Find evidence in this record"), "When was thyroid last checked?");
+    await userEvent.click(screen.getByRole("button", { name: "Find evidence" }));
+
+    const quote = await screen.findByRole("button", { name: /TSH: 3.2 mIU\/L/ });
+    expect(screen.getByText(/Backend: pubmedbert/)).toBeInTheDocument();
+    expect(screen.getByText("similarity 0.71")).toBeInTheDocument();
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(String(init?.body))).toEqual({ query: "When was thyroid last checked?" });
+
+    await userEvent.click(quote);
+    expect(onInspect).toHaveBeenCalledWith(expect.objectContaining({ kind: "OBSERVATION", observationId: 3 }));
+  });
+
+  it("shows an explicit abstention instead of an answer", async () => {
+    setCsrf("staff", "csrf-123");
+    mockFetch((url) =>
+      url.endsWith("/evidence-finder")
+        ? { body: { ...answered, decision: "AI_ABSTAINED", reason: "BELOW_THRESHOLD", best_score: 0.21, results: [] } }
+        : undefined,
+    );
+
+    render(<EvidenceFinder patientRef="CASE-TEST-0001" onInspect={() => undefined} />);
+    await userEvent.click(screen.getByRole("button", { name: "MRI brain" }));
+
+    const note = await screen.findByLabelText("AI abstained");
+    expect(note).toHaveTextContent("AI abstained because available evidence was insufficient");
+    expect(note).toHaveTextContent("No result on this record scored above the calibrated threshold.");
+    expect(screen.queryByRole("list")).not.toBeInTheDocument();
+  });
+
+  it("shows loading and then the server error", async () => {
+    setCsrf("staff", "csrf-123");
+    let release: (value: Response) => void = () => undefined;
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      () => new Promise<Response>((resolve) => (release = resolve)),
+    );
+
+    render(<EvidenceFinder patientRef="CASE-TEST-0001" onInspect={() => undefined} />);
+    await userEvent.click(screen.getByRole("button", { name: "vitamin D" }));
+
+    expect(await screen.findByText(/Ranking this record/)).toBeInTheDocument();
+    release(new Response(JSON.stringify({ detail: "Access denied." }), { status: 403 }));
+    expect(await screen.findByText("Access denied.")).toBeInTheDocument();
   });
 });

@@ -636,7 +636,7 @@ def ingest_document(
 # ============================================================
 
 def _delete_document_rows(db: Session, document: Document):
-    from .models import DocumentKey, LoopEvent, LoopMatch
+    from .models import AIDecision, DocumentKey, LoopEvent, LoopMatch
 
     commitment_ids = [
         row.id for row in db.query(Commitment.id).filter(Commitment.document_id == document.id)
@@ -646,6 +646,14 @@ def _delete_document_rows(db: Session, document: Document):
         (LoopMatch.document_id == document.id) | LoopMatch.commitment_id.in_(commitment_ids or [-1])
     )
     match_ids = [match.id for match in match_query.all()]
+
+    # AI decision provenance that points at this document, its loops
+    # or their matches goes with them.
+    db.query(AIDecision).filter(
+        (AIDecision.document_id == document.id)
+        | AIDecision.commitment_id.in_(commitment_ids or [-1])
+        | AIDecision.match_id.in_(match_ids or [-1])
+    ).delete(synchronize_session=False)
 
     if match_ids:
         db.query(LoopEvent).filter(LoopEvent.match_id.in_(match_ids)).update(

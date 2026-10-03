@@ -55,3 +55,24 @@ def instruction_concept(instruction: str) -> str:
 
 def result_label(observation_type: str) -> str:
     return re.sub(r"\s+", " ", (observation_type or "").split(":")[0]).strip()
+
+
+_QUESTION = re.compile(
+    r"\b(?:when|what|which|was|were|is|are|the|a|an|did|does|has|have|last|latest|recent|most|"
+    r"show|find|me|any|patient'?s?|his|her|their|result|results|value|values|level|levels|"
+    r"checked|done|measured|tested|reading|readings|report|reports|of|for)\b|[?.,;:!]",
+    re.IGNORECASE,
+)
+
+
+def query_concept(query: str) -> str:
+    """
+    A doctor's evidence-finder query reduced to its test concept:
+    "When was thyroid last checked?" -> "thyroid". Question words carry
+    no information about WHICH test. Returns "" when nothing is left.
+    """
+
+    text = _QUESTION.sub(" ", (query or "")[:120])
+    text = re.sub(r"\s+", " ", text).strip()
+
+    return instruction_concept(text) if text else ""

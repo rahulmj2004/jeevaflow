@@ -1,0 +1,142 @@
+{
+  "seed": 7,
+  "backends": [
+    {
+      "backend": "lexical-fallback",
+      "model": "lexical-fallback@v1",
+      "follow_through": {
+        "calibrated_threshold": 0.74,
+        "configured_threshold": 0.74,
+        "calibration": {
+          "ai": {
+            "precision": 1.0,
+            "recall": 0.182,
+            "false_alarm": 0.0,
+            "reports": 88
+          },
+          "rule": {
+            "precision": 1.0,
+            "recall": 0.068,
+            "false_alarm": 0.0,
+            "reports": 88
+          }
+        },
+        "test": {
+          "ai": {
+            "precision": 1.0,
+            "recall": 0.062,
+            "false_alarm": 0.0,
+            "reports": 96
+          },
+          "rule": {
+            "precision": 1.0,
+            "recall": 0.042,
+            "false_alarm": 0.0,
+            "reports": 96
+          }
+        },
+        "pairwise_test": {
+          "pairs": 1032,
+          "positives": 55,
+          "auroc": 0.609,
+          "auprc": 0.224
+        }
+      },
+      "evidence_finder": {
+        "calibrated_threshold": 0.2,
+        "configured_threshold": 0.2,
+        "calibration": {
+          "queries": 60,
+          "hit_rate": 0.25,
+          "result_precision": 0.857,
+          "abstention_correct": 1.0,
+          "unsupported_answers": 0.0
+        },
+        "test": {
+          "queries": 80,
+          "hit_rate": 0.188,
+          "result_precision": 0.857,
+          "abstention_correct": 1.0,
+          "unsupported_answers": 0.0
+        }
+      }
+    },
+    {
+      "backend": "pubmedbert",
+      "model": "pubmedbert-base-embeddings@b79526d",
+      "follow_through": {
+        "calibrated_threshold": 0.68,
+        "configured_threshold": 0.68,
+        "calibration": {
+          "ai": {
+            "precision": 1.0,
+            "recall": 0.318,
+            "false_alarm": 0.0,
+            "reports": 88
+          },
+          "rule": {
+            "precision": 1.0,
+            "recall": 0.068,
+            "false_alarm": 0.0,
+            "reports": 88
+          }
+        },
+        "test": {
+          "ai": {
+            "precision": 1.0,
+            "recall": 0.188,
+            "false_alarm": 0.0,
+            "reports": 96
+          },
+          "rule": {
+            "precision": 1.0,
+            "recall": 0.042,
+            "false_alarm": 0.0,
+            "reports": 96
+          }
+        },
+        "pairwise_test": {
+          "pairs": 1032,
+          "positives": 55,
+          "auroc": 0.919,
+          "auprc": 0.534
+        }
+      },
+      "evidence_finder": {
+        "calibrated_threshold": 0.4,
+        "configured_threshold": 0.4,
+        "calibration": {
+          "queries": 60,
+          "hit_rate": 0.917,
+          "result_precision": 0.917,
+          "abstention_correct": 0.972,
+          "unsupported_answers": 0.028
+        },
+        "test": {
+          "queries": 80,
+          "hit_rate": 0.719,
+          "result_precision": 0.767,
+          "abstention_correct": 0.958,
+          "unsupported_answers": 0.042
+        }
+      }
+    }
+  ],
+  "deterministic": true,
+  "performance": {
+    "pubmedbert": {
+      "load_seconds": 0.013,
+      "single_text_ms_median": 11.78,
+      "single_text_ms_p95": 12.31,
+      "batch16_ms": 134.56,
+      "peak_rss_mb_after": 875.0
+    },
+    "lexical-fallback": {
+      "load_seconds": 0.0,
+      "single_text_ms_median": 0.01,
+      "single_text_ms_p95": 0.01,
+      "batch16_ms": 0.09,
+      "peak_rss_mb_after": 875.0
+    }
+  }
+}

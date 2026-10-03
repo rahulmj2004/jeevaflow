@@ -25,10 +25,12 @@ from datetime import date
 
 from sqlalchemy.orm import Session
 
-from .followthrough import semantic
-from .followthrough.encoder import MODEL_ID
+from .followthrough import backends, semantic
 from .loops import ACTIVE_STATES, record_event
+from .security.crypto import new_ref
+from .security.phi_log import log_event
 from .models import (
+    AIDecision,
     Commitment,
     Document,
     LoopMatch,
@@ -176,31 +178,32 @@ def detect_potential_matches(
 
             created.append(match)
 
-    created += _semantic_matches(db, document, observations, commitments, created)
+    # Failure isolation: all AI work (vectors, scoring, decisions) is
+    # planned read-only first; if it fails, nothing is written and the
+    # document and the rule matches are kept.
+    try:
+        plans = _plan_semantic(db, document, observations, commitments, created)
+    except Exception:
+        log_event("AI_FOLLOWTHROUGH_FAILED", result="FAILED", object=document.ref)
+        plans = []
+
+    created += _apply_semantic(db, document, observations, plans)
 
     return created
 
 
-def _semantic_matches(db, document, observations, commitments, rule_matches) -> list[LoopMatch]:
+def _plan_semantic(db, document, observations, commitments, rule_matches) -> list[dict]:
     """
-    AI pass for loops the rules did not match in this document.
+    Read-only AI pass for loops the rules did not match in this
+    document: which backend, which threshold, every candidate scored.
     """
 
-    candidates = [
-        (observation.id, observation.observation_type, semantic.unpack(observation.embedding, MODEL_ID))
-        for observation in observations
-    ]
-    candidates = [item for item in candidates if item[2] is not None]
-
-    if not candidates:
-        return []
-
-    by_id = {observation.id: observation for observation in observations}
     rule_matched = {match.commitment_id for match in rule_matches}
-    created = []
+    plans = []
 
     for commitment in commitments:
-        loop_vector = semantic.unpack(commitment.embedding, MODEL_ID)
+        model_id = backends.model_of(commitment.embedding)
+        loop_vector = semantic.unpack(commitment.embedding, model_id) if model_id else None
         original = db.get(Document, commitment.document_id)
 
         if (
@@ -211,12 +214,71 @@ def _semantic_matches(db, document, observations, commitments, rule_matches) -> 
         ):
             continue
 
-        scored = semantic.rank(loop_vector, candidates)
+        # Only vectors from the same backend are comparable.
+        candidates = [
+            (observation.id, observation.observation_type, semantic.unpack(observation.embedding, model_id))
+            for observation in observations
+        ]
+        candidates = [item for item in candidates if item[2] is not None]
+        threshold = backends.FOLLOW_THROUGH_THRESHOLD[model_id]
+        scored = semantic.rank(loop_vector, candidates, threshold) if candidates else []
 
-        for item in scored:
-            if not item["suggested"]:
-                continue
+        plans.append({
+            "commitment": commitment,
+            "model_id": model_id,
+            "threshold": threshold,
+            "scored": scored,
+            "explanations": {
+                item["key"]: semantic.explanation_json(model_id, item, scored, threshold)
+                for item in scored if item["suggested"]
+            },
+        })
 
+    return plans
+
+
+def _apply_semantic(db, document, observations, plans) -> list[LoopMatch]:
+    """
+    Write the planned AI decisions: SUGGESTED (with POTENTIAL_MATCH
+    suggestions) or AI_ABSTAINED (the loop is left exactly as it was).
+    """
+
+    by_id = {observation.id: observation for observation in observations}
+    created = []
+
+    for plan in plans:
+        commitment, model_id, threshold, scored = plan["commitment"], plan["model_id"], plan["threshold"], plan["scored"]
+        suggested = [item for item in scored if item["suggested"]]
+
+        decision = AIDecision(
+            ref=new_ref("aid"),
+            feature="FOLLOW_THROUGH",
+            patient_id=commitment.patient_id,
+            commitment_id=commitment.id,
+            document_id=document.id,
+            backend=backends.BACKEND_OF[model_id],
+            model_id=model_id,
+            best_score=scored[0]["score"] if scored else None,
+            threshold=threshold,
+            candidates=len(scored),
+        )
+
+        if not suggested:
+            decision.decision = "AI_ABSTAINED"
+            decision.reason = (
+                "BELOW_THRESHOLD" if scored
+                else "NO_COMPARABLE_CANDIDATES" if observations
+                else "NO_CANDIDATES"
+            )
+            db.add(decision)
+            record_event(
+                db, commitment, action="AI_ABSTAINED", to_state=None,
+                actor_type="SYSTEM", actor_name="ai-followthrough",
+                note="AI abstained: available evidence was insufficient. The loop stays open.",
+            )
+            continue
+
+        for item in suggested:
             observation = by_id[item["key"]]
 
             if db.query(LoopMatch).filter(
@@ -231,17 +293,20 @@ def _semantic_matches(db, document, observations, commitments, rule_matches) -> 
                 evidence_id=observation.evidence_id,
                 # Plain text column: no document content, only the method.
                 rule=(
-                    f"AI semantic match (local biomedical model): similarity {item['score']:.2f}, "
+                    f"AI semantic match ({backends.BACKEND_OF[model_id]}): similarity {item['score']:.2f}, "
                     f"ranked {item['rank']} of {len(scored)} results in a newer document "
                     f"({effective_date(document).isoformat()}). Suggestion only."
                 ),
                 method="AI_SEMANTIC",
                 score=item["score"],
-                explanation=semantic.explanation_json(MODEL_ID, item, scored),
+                explanation=plan["explanations"][item["key"]],
             )
 
             db.add(match)
             db.flush()
+
+            if decision.match_id is None:
+                decision.match_id = match.id
 
             record_event(
                 db,
@@ -254,5 +319,8 @@ def _semantic_matches(db, document, observations, commitments, rule_matches) -> 
             )
 
             created.append(match)
+
+        decision.decision = "SUGGESTED"
+        db.add(decision)
 
     return created

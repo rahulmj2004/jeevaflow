@@ -405,13 +405,11 @@ def _document_kind(kinds: list[str]) -> str:
 def _embed_for_followthrough(commitments: list[dict], observations: list[dict]) -> dict:
     """
     Follow-through engine: embed each instruction's test concept and
-    each result's LABEL (never its value) with the local biomedical
-    encoder. Matching later uses only these vectors. Without a
-    verified model nothing is embedded and the rule matcher still runs.
+    each result's LABEL (never its value). Uses the pinned biomedical
+    encoder, or the labelled lexical fallback when it is unavailable.
     """
 
-    from app.followthrough import semantic
-    from app.followthrough.encoder import MODEL_ID, load
+    from app.followthrough import backends, semantic
     from app.followthrough.text import instruction_concept, result_label
 
     targets = [(item, instruction_concept(item["instruction"])) for item in commitments]
@@ -419,22 +417,42 @@ def _embed_for_followthrough(commitments: list[dict], observations: list[dict]) 
     targets = [(item, text) for item, text in targets if text]
 
     if not targets:
-        return {"model": None, "status": "NOTHING_TO_EMBED", "embedded": 0}
+        return {"model": None, "backend": None, "status": "NOTHING_TO_EMBED", "embedded": 0}
 
-    encoder, problem = load()
-
-    if encoder is None:
-        return {"model": None, "status": problem, "embedded": 0}
+    encoder, model_id, fallback_reason = backends.load()
 
     try:
         vectors = encoder.encode([text for _, text in targets])
     except Exception:
-        return {"model": None, "status": "ENCODE_FAILED", "embedded": 0}
+        return {"model": None, "backend": None, "status": "ENCODE_FAILED", "embedded": 0}
 
     for (item, _), vector in zip(targets, vectors):
-        item["embedding"] = semantic.pack(MODEL_ID, vector)
+        item["embedding"] = semantic.pack(model_id, vector)
 
-    return {"model": MODEL_ID, "status": "ACTIVE", "embedded": len(targets)}
+    return {
+        "model": model_id,
+        "backend": backends.BACKEND_OF[model_id],
+        "status": "ACTIVE" if fallback_reason is None else f"FALLBACK:{fallback_reason}",
+        "embedded": len(targets),
+    }
+
+
+def op_embed(job: dict) -> dict:
+    """
+    Evidence finder: embed short query concepts (no document content).
+    """
+
+    from app.followthrough import backends, semantic
+
+    texts = [str(text)[:120] for text in job.get("texts", [])][:8]
+    encoder, model_id, fallback_reason = backends.load()
+
+    return {
+        "model": model_id,
+        "backend": backends.BACKEND_OF[model_id],
+        "fallback_reason": fallback_reason,
+        "vectors": [semantic.pack(model_id, vector) for vector in encoder.encode(texts)] if texts else [],
+    }
 
 
 def op_extract(job: dict) -> dict:
@@ -769,7 +787,7 @@ def op_render(job: dict) -> dict:
     return {"png": base64.b64encode(out.getvalue()).decode(), "masked": masked}
 
 
-OPERATIONS = {"inspect": op_inspect, "extract": op_extract, "render": op_render}
+OPERATIONS = {"inspect": op_inspect, "extract": op_extract, "render": op_render, "embed": op_embed}
 
 
 def main():

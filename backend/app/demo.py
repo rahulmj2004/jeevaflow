@@ -99,10 +99,13 @@ Laboratory Results
 
 HbA1c: 8.2 %
 """,
-    # AI Follow-Through demo: only the kidney instruction is in the
-    # keyword table; thyroid and liver are matched by the AI engine; for
-    # anaemia it ranks haemoglobin first but below the calibrated
-    # threshold, so it abstains; "Review in 4 weeks" names no test.
+    # AI follow-through demo (scores are the real pubmedbert values at
+    # the calibrated thresholds; see docs/AI_DEMO.md):
+    #   PSA -> "Prostate Specific Antigen"   SUGGESTED (0.69, no shared word)
+    #   vitamin D -> "Vitamin D (25-OH)"     SUGGESTED (0.86); Vitamin B12 trap (0.67) rejected
+    #   thyroid function -> TSH              AI_ABSTAINED (0.645 < 0.68): loop stays open
+    #   kidney function -> Creatinine        RULE match (keyword table)
+    #   "Review in 4 weeks"                  names no test: stays open
     FOLLOWTHROUGH_PLAN: f"""{SYNTHETIC_BANNER}
 
 JEEVAFLOW DEMO CLINIC - FOLLOW-UP PLAN
@@ -112,10 +115,10 @@ Reg. No: SYN-12345
 Report Date: 05/10/2026
 
 Advice
+Repeat PSA after 2 months.
+Check vitamin D levels after 3 months.
 Check thyroid function after 6 weeks.
-Monitor liver enzymes in 2 months.
 Repeat kidney function test in 3 months.
-Check for anaemia after iron therapy.
 Review in 4 weeks.
 """,
     FOLLOWTHROUGH_LABS: f"""{SYNTHETIC_BANNER}
@@ -126,11 +129,11 @@ Report Date: 28/12/2026
 
 Laboratory Results
 
-TSH: 3.2 mIU/L
-SGPT (ALT): 32 U/L
-Serum Creatinine: 1.1 mg/dL
-Hemoglobin: 12.6 g/dL
+Prostate Specific Antigen: 1.2 ng/mL
+Vitamin D (25-OH): 31 ng/mL
 Vitamin B12: 410 pg/mL
+TSH: 3.2 mIU/L
+Serum Creatinine: 1.1 mg/dL
 """,
 }
 
@@ -222,6 +225,12 @@ def reset_patient_records(db: Session, patient_id: int) -> dict:
     }
 
     db.query(EvidenceToken).filter(EvidenceToken.patient_id == patient_id).delete(synchronize_session=False)
+
+    from .models import AIDecision
+
+    counts["ai_decisions"] = db.query(AIDecision).filter(AIDecision.patient_id == patient_id).delete(
+        synchronize_session=False
+    )
     db.commit()
 
     return counts

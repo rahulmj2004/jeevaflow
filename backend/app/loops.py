@@ -132,6 +132,46 @@ def serialize_match(db: Session, match: LoopMatch) -> dict:
     }
 
 
+def latest_ai_decision(db: Session, commitment_id: int):
+    from .models import AIDecision
+
+    return (
+        db.query(AIDecision)
+        .filter(AIDecision.commitment_id == commitment_id)
+        .order_by(AIDecision.id.desc())
+        .first()
+    )
+
+
+def serialize_ai_decision(db: Session, decision) -> Optional[dict]:
+    """
+    Provenance of the latest AI decision on a loop (None: the AI has
+    not considered this loop, e.g. no newer results, or the rules
+    matched it first).
+    """
+
+    if decision is None:
+        return None
+
+    document = db.get(Document, decision.document_id) if decision.document_id else None
+
+    return {
+        "ref": decision.ref,
+        "feature": decision.feature,
+        "decision": decision.decision,
+        "reason": decision.reason,
+        "backend": decision.backend,
+        "model": decision.model_id,
+        "best_score": decision.best_score,
+        "threshold": decision.threshold,
+        "candidates": decision.candidates,
+        "document_ref": document.ref if document else None,
+        "document_date": document.document_date if document else None,
+        "match_id": decision.match_id,
+        "created_at": decision.created_at,
+    }
+
+
 def serialize_loop(
     db: Session,
     commitment: Commitment,
@@ -172,6 +212,7 @@ def serialize_loop(
             ),
             None,
         ),
+        "ai_decision": serialize_ai_decision(db, latest_ai_decision(db, commitment.id)),
         "created_at": commitment.created_at,
         "updated_at": commitment.updated_at,
     }

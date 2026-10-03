@@ -6,8 +6,9 @@ candidate. The score is the cosine similarity between the loop's
 instruction-concept embedding and the result-label embedding (both
 computed in the isolated worker). A candidate is suggested only if:
 
-    score >= SUGGEST_THRESHOLD   calibrated on the synthetic
-                                 calibration split (evaluation/) for
+    score >= threshold           calibrated per backend on the
+                                 synthetic calibration split
+                                 (backends.py, evaluation/) for
                                  precision first; below it, abstain
     it ranks first for the loop  among the document's results, or
                                  within RANK_MARGIN of the first (a
@@ -25,7 +26,8 @@ from typing import Optional
 
 import numpy as np
 
-SUGGEST_THRESHOLD = 0.34
+# Default = pubmedbert follow-through threshold (backends.py).
+SUGGEST_THRESHOLD = 0.68
 RANK_MARGIN = 0.06
 MAX_SUGGESTIONS = 3
 ALTERNATIVES_SHOWN = 3
@@ -57,11 +59,15 @@ def unpack(blob: Optional[str], model_id: str) -> Optional[np.ndarray]:
     return vector / norm if vector.size and norm > 0 else None
 
 
-def rank(loop_vector: np.ndarray, candidates: list[tuple[object, str, np.ndarray]]) -> list[dict]:
+def rank(loop_vector: np.ndarray, candidates: list[tuple[object, str, np.ndarray]],
+         threshold: Optional[float] = None) -> list[dict]:
     """
     candidates: (key, label, vector). Returns every candidate scored,
-    best first, each marked suggested or not.
+    best first, each marked suggested or not. threshold defaults to
+    the pubmedbert follow-through threshold.
     """
+
+    threshold = SUGGEST_THRESHOLD if threshold is None else threshold
 
     scored = sorted(
         (
@@ -77,7 +83,7 @@ def rank(loop_vector: np.ndarray, candidates: list[tuple[object, str, np.ndarray
     for position, item in enumerate(scored, start=1):
         item["rank"] = position
         item["suggested"] = (
-            item["score"] >= SUGGEST_THRESHOLD
+            item["score"] >= threshold
             and best - item["score"] <= RANK_MARGIN
             and position <= MAX_SUGGESTIONS
         )
@@ -85,19 +91,22 @@ def rank(loop_vector: np.ndarray, candidates: list[tuple[object, str, np.ndarray
     return scored
 
 
-def explanation(model_id: str, item: dict, scored: list[dict]) -> dict:
+def explanation(model_id: str, item: dict, scored: list[dict], threshold: Optional[float] = None) -> dict:
     """
-    Structured "why" for one suggestion: score, rank, threshold and
-    the other candidates the model considered.
+    Structured "why" for one suggestion: backend, score, rank,
+    threshold and the other candidates considered.
     """
+
+    from .backends import BACKEND_OF
 
     return {
         "method": "AI_SEMANTIC",
+        "backend": BACKEND_OF.get(model_id, "unknown"),
         "model": model_id,
         "score": item["score"],
         "rank": item["rank"],
         "candidates": len(scored),
-        "threshold": SUGGEST_THRESHOLD,
+        "threshold": SUGGEST_THRESHOLD if threshold is None else threshold,
         "alternatives": [
             {"label": other["label"], "score": other["score"]}
             for other in scored
@@ -106,5 +115,5 @@ def explanation(model_id: str, item: dict, scored: list[dict]) -> dict:
     }
 
 
-def explanation_json(model_id: str, item: dict, scored: list[dict]) -> str:
-    return json.dumps(explanation(model_id, item, scored))
+def explanation_json(model_id: str, item: dict, scored: list[dict], threshold: Optional[float] = None) -> str:
+    return json.dumps(explanation(model_id, item, scored, threshold))

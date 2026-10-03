@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { api } from "../api";
 import { formatDate, formatDateTime, formatValue, humanize } from "../format";
-import type { Evidence, LoopHistoryEntry, LoopMatch, OpenLoop } from "../types";
+import type { AIDecisionInfo, Evidence, LoopHistoryEntry, LoopMatch, OpenLoop } from "../types";
 import type { EvidenceSelection } from "./EvidenceViewer";
 import { EmptyState, ErrorBanner, SourceIcon, StatusBadge } from "./StatusBadge";
 
@@ -156,6 +156,10 @@ function LoopCard({ loop, onChanged, onInspect }: { loop: OpenLoop } & Omit<Prop
         onClick={inspectInstruction}
       />
 
+      {!match && loop.state !== "CLOSED" && loop.ai_decision?.decision === "AI_ABSTAINED" && (
+        <AiAbstained decision={loop.ai_decision} />
+      )}
+
       {match && loop.state !== "CLOSED" && (
         <div className="potential" role="region" aria-label="Potential completion">
           <p className="potential-title">
@@ -299,7 +303,40 @@ export function AiMatchExplanation({ match }: { match: LoopMatch }) {
           </li>
         ))}
       </ul>
-      <p className="small muted">Model: {explanation.model}. A suggestion, not a decision.</p>
+      <p className="small muted">
+        Backend: {explanation.backend ?? "pubmedbert"} · model {explanation.model}. A suggestion, not a decision.
+      </p>
+    </div>
+  );
+}
+
+const ABSTAIN_REASON: Record<string, string> = {
+  BELOW_THRESHOLD: "no result in the newer document scored above the calibrated threshold",
+  NO_COMPARABLE_CANDIDATES: "the newer results were indexed by a different AI backend",
+  NO_CANDIDATES: "the newer document had no results to compare",
+};
+
+/**
+ * The AI looked at a newer document for this loop and declined to
+ * suggest anything. The loop is unchanged and stays with the doctor.
+ */
+export function AiAbstained({ decision }: { decision: AIDecisionInfo }) {
+  return (
+    <div className="ai-abstained" role="note" aria-label="AI abstained">
+      <p className="small">
+        <span className="badge badge-neutral">AI_ABSTAINED</span> AI abstained because available evidence was
+        insufficient: {ABSTAIN_REASON[decision.reason ?? ""] ?? "no reliable match"}. The loop stays open.
+      </p>
+      <p className="small muted">
+        {decision.best_score != null && decision.threshold != null && (
+          <>
+            Best candidate scored {decision.best_score.toFixed(2)} against a threshold of {decision.threshold.toFixed(2)}{" "}
+            ({decision.candidates} considered).{" "}
+          </>
+        )}
+        Backend: {decision.backend ?? "unknown"}
+        {decision.document_date ? ` · document of ${formatDate(decision.document_date)}` : ""}.
+      </p>
     </div>
   );
 }
