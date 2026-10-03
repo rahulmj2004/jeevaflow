@@ -374,7 +374,13 @@ def test_pipeline_accepts_reported_pdf_and_strips_manifest(patient_ref):
         ("OpenAction", "<</S/Launch/F(cmd.exe)>>", "SUSPICIOUS_PDF", "LAUNCH_ACTION"),
     ],
 )
-def test_pipeline_rejects_active_pdf_with_structured_result(patient_ref, catalog_key, value, code, feature):
+def test_pipeline_rejects_active_pdf_with_structured_result(patient_ref, catalog_key, value, code, feature, monkeypatch):
+    from app.security import scanner
+
+    # Exercise the structural (worker) layer on its own: the byte-level
+    # scan that runs first would otherwise catch these too.
+    monkeypatch.setattr(scanner, "scan", lambda *args: scanner.ScanResult(True, "test"))
+
     content = build_pdf(lambda doc, page: doc.xref_set_key(doc.pdf_catalog(), catalog_key, value))
 
     with pytest.raises(FileValidationError) as error:
@@ -383,13 +389,13 @@ def test_pipeline_rejects_active_pdf_with_structured_result(patient_ref, catalog
     assert error.value.code == code
     assert error.value.security_scan["safe"] is False
     assert error.value.security_scan["detected_feature"] == feature
-    assert "active content" in error.value.message
+    assert error.value.message == "File could not be accepted."
 
     db = SessionLocal()
     try:
         assert db.query(Document).count() == 0
         reasons = [event.reason for event in db.query(AuditEvent).filter(AuditEvent.action == "DOCUMENT_REJECTED")]
-        assert f"{code}:{feature}" in reasons
+        assert any(reason.startswith(f"{code}:{feature}:") for reason in reasons)
     finally:
         db.close()
 
@@ -431,4 +437,4 @@ def test_portal_upload_endpoint_rejects_javascript_pdf(client):
     )
 
     assert upload.status_code == 400
-    assert "active content (JavaScript)" in upload.json()["detail"]
+    assert upload.json() == {"detail": "File could not be accepted."}

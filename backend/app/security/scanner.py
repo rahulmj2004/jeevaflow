@@ -1,8 +1,11 @@
 """
 Malware scanning.
 
-ClamAV (clamdscan or clamscan) is used when installed. Without it,
-a built-in heuristic scanner runs on the raw bytes. The heuristic
+ClamAV is used when available: the clamd daemon over INSTREAM
+(JEEVAFLOW_CLAMD_ADDRESS, required in production), else a clamdscan /
+clamscan binary. Every scanner error or timeout rejects the file
+(fail closed). Without ClamAV, outside production only, the built-in
+heuristic scanner is the only engine. The heuristic
 scanner is a DEMO IMPLEMENTATION; signature-based scanning
 (ClamAV or an equivalent service) is PRODUCTION REQUIRED, and the
 security dashboard reports which engine is active.
@@ -11,6 +14,7 @@ Heuristics (on bytes, no parsing):
     EICAR test signature
     embedded executables (PE, ELF, Mach-O) or archives
     script / HTML markup inside images
+    polyglots: a PDF header inside an image
     PDF active-content tripwire (long, unambiguous action names only)
 
 The authoritative PDF active-content check is structural and runs in
@@ -27,6 +31,8 @@ deliberately omits:
 
 import re
 import shutil
+import socket
+import struct
 import subprocess
 from dataclasses import dataclass
 from typing import Optional
@@ -45,6 +51,9 @@ _EMBEDDED_EXECUTABLE = [
 ]
 
 _IMAGE_SCRIPT = re.compile(rb"<\s*(script|html|iframe|svg|\?php)\b", re.IGNORECASE)
+
+CLAMD_TIMEOUT_SECONDS = 30
+CLAMD_CHUNK = 64 * 1024
 
 PDF_ACTIVE_CONTENT = [
     b"/JavaScript", b"/Launch", b"/RichMedia", b"/XFA",
@@ -71,9 +80,62 @@ def clamav_binary() -> Optional[str]:
 
 
 def engine_name() -> str:
+    if settings.clamd_address:
+        return "clamav:clamd"
+
     binary = clamav_binary()
 
     return f"clamav:{binary.rsplit('/', 1)[-1]}" if binary else "heuristic"
+
+
+def _clamd_connect() -> socket.socket:
+    address = settings.clamd_address
+
+    if address.startswith("unix:") or address.startswith("/"):
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(CLAMD_TIMEOUT_SECONDS)
+        sock.connect(address.removeprefix("unix:"))
+        return sock
+
+    host, _, port = address.removeprefix("tcp:").rpartition(":")
+
+    return socket.create_connection((host, int(port)), timeout=CLAMD_TIMEOUT_SECONDS)
+
+
+def _clamd_instream(content: bytes) -> ScanResult:
+    """
+    clamd INSTREAM: length-prefixed chunks, then a zero-length chunk.
+    Replies "stream: OK", "stream: <name> FOUND" or "... ERROR".
+    """
+
+    with _clamd_connect() as sock:
+        sock.sendall(b"zINSTREAM\0")
+
+        for start in range(0, len(content), CLAMD_CHUNK):
+            chunk = content[start:start + CLAMD_CHUNK]
+            sock.sendall(struct.pack("!L", len(chunk)) + chunk)
+
+        sock.sendall(struct.pack("!L", 0))
+
+        reply = b""
+
+        while not reply.endswith(b"\0"):
+            data = sock.recv(4096)
+
+            if not data:
+                break
+
+            reply += data
+
+    reply = reply.rstrip(b"\0").strip()
+
+    if reply.endswith(b" OK"):
+        return ScanResult(True, "clamav:clamd")
+
+    if reply.endswith(b" FOUND"):
+        return ScanResult(False, "clamav:clamd", "MALWARE_SIGNATURE")
+
+    return ScanResult(False, "clamav:clamd", "SCANNER_ERROR")
 
 
 def _heuristic(content: bytes, content_type: str) -> ScanResult:
@@ -87,6 +149,9 @@ def _heuristic(content: bytes, content_type: str) -> ScanResult:
     if content_type.startswith("image/") and _IMAGE_SCRIPT.search(content):
         return ScanResult(False, "heuristic", "SCRIPT_IN_IMAGE")
 
+    if content_type.startswith("image/") and b"%PDF-" in content:
+        return ScanResult(False, "heuristic", "POLYGLOT")
+
     if content_type == "application/pdf" and _PDF_ACTIVE.search(content):
         return ScanResult(False, "heuristic", "PDF_ACTIVE_CONTENT")
 
@@ -98,6 +163,17 @@ def scan(content: bytes, content_type: str) -> ScanResult:
 
     if not heuristic.clean:
         return heuristic
+
+    if settings.clamd_address:
+        try:
+            return _clamd_instream(content)
+        except Exception:
+            # Fail closed: unreachable, timed out or malformed reply.
+            return ScanResult(False, "clamav:clamd", "SCANNER_ERROR")
+
+    if settings.is_production:
+        # Never accept on heuristics alone in production.
+        return ScanResult(False, "none", "SCANNER_UNAVAILABLE")
 
     binary = clamav_binary()
 

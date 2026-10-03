@@ -9,6 +9,8 @@ pillow
 opencv-python
 numpy
 pytesseract
+onnxruntime
+tokenizers
 cryptography
 httpx
 python-dotenv

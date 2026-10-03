@@ -134,6 +134,11 @@ class Document(Base):
     # Generic, PHI-free error description.
     processing_error = Column(Text, nullable=True)
     extraction_method = Column(String(20), nullable=True)
+    # PRINT | HANDWRITTEN | MIXED | UNKNOWN, decided in the worker at
+    # processing time (NULL until then). Anything but PRINT needs a
+    # doctor's review before its contents are trusted.
+    content_kind = Column(String(16), nullable=True)
+    needs_manual_review = Column(Boolean, default=False, nullable=False)
 
     # QUARANTINED -> PROCESSING -> PROCESSED | REJECTED | FAILED
     processing_status = Column(String(30), default="QUARANTINED", nullable=False)
@@ -210,6 +215,11 @@ class Observation(Base):
     review_status = Column(String(20), default=ReviewStatus.REVIEW.value, nullable=False)
     fact_state = Column(String(20), default=FactState.SOURCE_FACT.value, nullable=False)
     fact_note = Column(String(200), nullable=True)
+    # Drift-detector result (JSON). Encrypted: findings quote the source.
+    drift = Column(EncryptedText(), nullable=True)
+    # Follow-through engine: embedding of the result LABEL only (never
+    # the value), "<model id>|<base64 float16>".
+    embedding = Column(EncryptedText(), nullable=True)
     confidence = Column(Float, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
@@ -226,6 +236,10 @@ class Commitment(Base):
 
     instruction = Column(EncryptedText(), nullable=False)
     due_date = Column(Date, nullable=True)
+    # Follow-through engine: embedding of the instruction's test
+    # concept ("<model id>|<base64 float16>"), computed in the worker.
+    # NULL when the instruction names no test or the model was absent.
+    embedding = Column(EncryptedText(), nullable=True)
     state = Column(String(30), default=LoopState.OPEN.value, nullable=False)
 
     evidence_id = Column(Integer, ForeignKey("source_evidence.id"), nullable=True)
@@ -266,6 +280,8 @@ class ClinicalFact(Base):
     state = Column(String(20), nullable=False)
     confidence = Column(Float, nullable=True)
     pipeline_version = Column(String(40), nullable=True)
+    # Drift-detector result (JSON). Encrypted: findings quote the source.
+    drift = Column(EncryptedText(), nullable=True)
 
     # REVIEW | CONFIRMED | REJECTED  (doctor is the final gate)
     review_status = Column(String(20), default="REVIEW", nullable=False)
@@ -291,6 +307,12 @@ class LoopMatch(Base):
     evidence_id = Column(Integer, ForeignKey("source_evidence.id"), nullable=False)
 
     rule = Column(Text, nullable=False)
+    # RULE (keyword table) | AI_SEMANTIC (follow-through engine)
+    method = Column(String(20), default="RULE", nullable=False)
+    score = Column(Float, nullable=True)
+    # AI_SEMANTIC only: JSON with model, score, rank, threshold and the
+    # other candidates considered. Encrypted: holds result labels.
+    explanation = Column(EncryptedText(), nullable=True)
     status = Column(String(20), default=MatchStatus.PENDING.value, nullable=False)
     reviewed_by = Column(String(200), nullable=True)
     reviewed_at = Column(DateTime, nullable=True)

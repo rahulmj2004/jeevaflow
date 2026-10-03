@@ -69,6 +69,9 @@ REPLIES = {
         "Your JeevaFlow verification code is {otp}. It expires in 5 minutes. "
         "Never share this code with anyone."
     ),
+    "HANDWRITTEN_RECEIVED": (
+        "Your handwritten document was received and will be reviewed by a doctor."
+    ),
     "PROCESSED": (
         "Your document has been processed. Continue to the verified "
         "JeevaFlow portal."

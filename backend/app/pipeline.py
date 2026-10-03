@@ -6,11 +6,14 @@ receive_document() and process_document(). There is no second path.
 
 receive_document()   - caller has authenticated the transaction or
                        patient session
-    validate size / declared type / magic bytes
+    rejection lockout (5 per patient per hour)
+    -> validate size / declared type / magic bytes
+    -> malware scan of the original (ClamAV clamd; fail closed)
     -> isolated worker: structure, page count, dimensions, active
        PDF content, decompression bombs; sanitise (PDF rebuild,
        image re-encode without EXIF)
-    -> malware scan (original and sanitised bytes)
+    -> malware scan of the sanitised bytes
+    any rejection: one generic error, audited, nothing stored
     -> SHA-256 integrity hash, per-patient deduplication
     -> AES-256-GCM with a fresh DEK -> private vault
     -> Document QUARANTINED (nothing is read from it yet)
@@ -52,44 +55,17 @@ from .models import (
     Transaction,
 )
 from .provenance import locate_quote
-from .security import audit, scanner
+from .security import audit, ratelimit, scanner
 from .security.crypto import new_ref
 from .storage import FileValidationError, sha256_of, validate_file
 from .worker_client import WorkerError, decode, run_worker
 
 
-REJECTION_MESSAGES = {
-    "EMPTY_FILE": "The file is empty.",
-    "FILE_TOO_LARGE": "The file is too large.",
-    "UNSUPPORTED_TYPE": "Only PDF, JPG and PNG files are supported.",
-    "CONTENT_MISMATCH": "The file content does not match its declared type.",
-    "CORRUPTED_FILE": "The file is damaged or could not be read.",
-    "SUSPICIOUS_PDF": "The PDF contains active content and was rejected.",
-    "ENCRYPTED_PDF": "Password-protected PDFs are not accepted.",
-    "TOO_MANY_PAGES": "The document has too many pages.",
-    "INVALID_DIMENSIONS": "The image dimensions are not accepted.",
-    "DECOMPRESSION_BOMB": "The image is too large to process safely.",
-    "ANIMATED_IMAGE": "Animated images are not accepted.",
-    "MALWARE_DETECTED": "The file failed the security scan.",
-    "WORKER_ERROR": "The file could not be validated.",
-    "WORKER_TIMEOUT": "The file could not be validated in time.",
-}
+# The only message any rejected upload gets, whatever the reason: the
+# reason code goes to the audit log, never to the uploader.
+GENERIC_REJECTION = "File could not be accepted."
 
 GENERIC_FAILURE = "The document could not be processed reliably."
-
-# Fixed labels for detected PDF features (app/security/pdf_active_content.py).
-PDF_FEATURE_LABELS = {
-    "JAVASCRIPT": "JavaScript",
-    "OPEN_ACTION": "an automatic open action",
-    "ADDITIONAL_ACTIONS": "event-triggered actions",
-    "LAUNCH_ACTION": "a launch action",
-    "REMOTE_ACTION": "a remote/external action",
-    "RICH_MEDIA": "rich media",
-    "XFA_FORM": "a dynamic XFA form",
-    "EMBEDDED_EXECUTABLE": "an embedded executable",
-    "EMBEDDED_FILE": "an embedded file",
-}
-
 
 class ExtractionFailed(Exception):
     pass
@@ -117,6 +93,7 @@ class IngestionResult:
     potential_matches: list = field(default_factory=list)
     stages: list = field(default_factory=list)
     security_scan: Optional[dict] = None
+    drift: Optional[dict] = None
     error: Optional[str] = None
 
     def stage(self, name: str, status: str, detail: Optional[str] = None):
@@ -136,6 +113,8 @@ class IngestionResult:
             "quality_reason": document.quality_reason,
             "processing_error": document.processing_error,
             "extraction_method": document.extraction_method,
+            "content_kind": document.content_kind,
+            "needs_manual_review": document.needs_manual_review,
             "document_date": document.document_date,
             "scan_status": document.scan_status,
             "scan_engine": document.scan_engine,
@@ -150,24 +129,51 @@ class IngestionResult:
             "potential_matches": [serialize_match(db, match) for match in self.potential_matches],
             "stages": self.stages,
             "security_scan": self.security_scan,
+            "drift": self.drift,
             "error": self.error,
         }
 
 
-def _reject(patient: Patient, code: str, actor_ref: Optional[str], security_scan: Optional[dict] = None):
+def _reject(
+    patient: Patient,
+    code: str,
+    actor_ref: Optional[str],
+    sha256: str,
+    security_scan: Optional[dict] = None,
+):
     feature = (security_scan or {}).get("detected_feature")
-    message = REJECTION_MESSAGES.get(code, GENERIC_FAILURE)
+    tag = f"{code}:{feature}" if feature else code
 
-    if code == "SUSPICIOUS_PDF" and feature in PDF_FEATURE_LABELS:
-        message = f"The PDF contains active content ({PDF_FEATURE_LABELS[feature]}) and was rejected."
-
-    # Only fixed codes reach the audit log, never document content.
+    # Fixed codes, a hash prefix and the case alias only: never
+    # document content or patient identity.
     audit.record_now(
         "DOCUMENT_REJECTED", actor_type="SERVICE", actor_ref=actor_ref,
-        object_type="PATIENT", object_ref=patient.ref, result="DENIED",
-        reason=f"{code}:{feature}"[:60] if feature else code,
+        object_type="CASE", object_ref=patient.case_alias, result="DENIED",
+        reason=f"{tag[:35]}:{sha256[:24]}",
     )
-    raise FileValidationError(code, message, security_scan)
+
+    if code != "UPLOAD_LOCKED":
+        try:
+            ratelimit.hit("upload_reject_patient", patient.ref)
+        except ratelimit.RateLimited:
+            pass
+
+    raise FileValidationError(code, GENERIC_REJECTION, security_scan)
+
+
+def _scan(patient: Patient, payload: bytes, content_type: str, actor_ref: Optional[str], sha256: str):
+    try:
+        verdict = scanner.scan(payload, content_type)
+    except Exception:
+        # Fail closed: a scanner crash never lets a file through.
+        verdict = scanner.ScanResult(False, scanner.engine_name(), "SCANNER_ERROR")
+
+    if not verdict.clean:
+        audit.record_now(
+            "DOCUMENT_SCANNED", actor_type="SERVICE", actor_ref=verdict.engine,
+            object_type="CASE", object_ref=patient.case_alias, result="DENIED", reason=verdict.code,
+        )
+        _reject(patient, "MALWARE_DETECTED", actor_ref, sha256)
 
 
 # ============================================================
@@ -192,12 +198,18 @@ def receive_document(
 
     db.commit()
 
+    sha256 = sha256_of(content)
+
+    if ratelimit.exhausted("upload_reject_patient", patient.ref):
+        _reject(patient, "UPLOAD_LOCKED", actor_ref, sha256)
+
     try:
         verified_type = validate_file(content, content_type)
     except FileValidationError as exc:
-        _reject(patient, exc.code, actor_ref)
+        _reject(patient, exc.code, actor_ref, sha256)
 
-    sha256 = sha256_of(content)
+    # Signature scan before the bytes reach the worker or the vault.
+    _scan(patient, content, verified_type, actor_ref, sha256)
 
     existing = (
         db.query(Document)
@@ -223,19 +235,11 @@ def receive_document(
     try:
         inspected = run_inspection(content, verified_type)
     except WorkerError as exc:
-        _reject(patient, exc.code, actor_ref, exc.security_scan)
+        _reject(patient, exc.code, actor_ref, sha256, exc.security_scan)
 
     sanitized = decode(inspected, "sanitized")
 
-    for payload in (content, sanitized):
-        verdict = scanner.scan(payload, verified_type)
-
-        if not verdict.clean:
-            audit.record_now(
-                "DOCUMENT_SCANNED", actor_type="SERVICE", actor_ref=verdict.engine,
-                object_type="PATIENT", object_ref=patient.ref, result="DENIED", reason=verdict.code,
-            )
-            _reject(patient, "MALWARE_DETECTED", actor_ref)
+    _scan(patient, sanitized, verified_type, actor_ref, sha256)
 
     now = datetime.utcnow()
 
@@ -346,6 +350,17 @@ def _store_extraction(db: Session, document: Document, extracted: dict, result: 
         document.document_date is not None
         and document.document_date > date.today() + timedelta(days=1)
     )
+    # Handwritten / mixed / unclear: every item stays UNCERTAIN until a
+    # doctor confirms it, and no Open Loop is created automatically.
+    review = document.needs_manual_review
+    review_note = "Handwritten or unclear source; confirm against the original."
+    drift_note = "Possible extraction drift: review required."
+
+    def drifted(item: dict) -> bool:
+        return (item.get("drift") or {}).get("status") == "REVIEW REQUIRED"
+
+    def drift_json(item: dict) -> Optional[str]:
+        return json.dumps(item["drift"]) if item.get("drift") else None
 
     for item in extracted["observations"]:
         evidence = _create_evidence(db, document, pages, item)
@@ -357,7 +372,11 @@ def _store_extraction(db: Session, document: Document, extracted: dict, result: 
         confidence = item.get("confidence")
         state, note = FactState.SOURCE_FACT.value, None
 
-        if confidence is not None and confidence < OCR_CONFIDENCE_THRESHOLD:
+        if review:
+            state, note = FactState.UNCERTAIN.value, review_note
+        elif drifted(item):
+            state, note = FactState.UNCERTAIN.value, drift_note
+        elif confidence is not None and confidence < OCR_CONFIDENCE_THRESHOLD:
             state, note = FactState.UNCERTAIN.value, "Low OCR confidence; confirm against the source."
         elif future_date:
             state, note = FactState.UNCERTAIN.value, "Report date is in the future."
@@ -375,13 +394,15 @@ def _store_extraction(db: Session, document: Document, extracted: dict, result: 
                 fact_state=state,
                 fact_note=note,
                 confidence=confidence,
+                drift=drift_json(item),
+                embedding=item.get("embedding"),
             )
         )
 
         result.evidence_created += 1
         result.observations_created += 1
 
-    for item in extracted["commitments"]:
+    for item in [] if review else extracted["commitments"]:
         evidence = _create_evidence(db, document, pages, item)
 
         if evidence is None:
@@ -396,6 +417,7 @@ def _store_extraction(db: Session, document: Document, extracted: dict, result: 
                 due_date=date.fromisoformat(item["due_date"]) if item.get("due_date") else None,
                 evidence_id=evidence.id,
                 state=LoopState.OPEN.value,
+                embedding=item.get("embedding"),
             )
         )
 
@@ -411,7 +433,7 @@ def _store_extraction(db: Session, document: Document, extracted: dict, result: 
 
         state = item["state"]
 
-        if future_date and state != FactState.UNCERTAIN.value:
+        if (review or future_date or drifted(item)) and state != FactState.UNCERTAIN.value:
             state = FactState.UNCERTAIN.value
 
         db.add(
@@ -426,6 +448,7 @@ def _store_extraction(db: Session, document: Document, extracted: dict, result: 
                 state=state,
                 confidence=item.get("confidence"),
                 pipeline_version=PIPELINE_VERSION,
+                drift=drift_json(item),
             )
         )
 
@@ -477,10 +500,37 @@ def process_document(db: Session, document: Document, actor_ref: Optional[str] =
             db.commit()
             return result
 
-        if not any(page["text"].strip() for page in extracted["pages"]):
-            raise ExtractionFailed("No readable text was detected in the document.")
-
+        # Content kind is decided BEFORE the readability check, so poor
+        # OCR on handwriting routes to doctor review instead of failing.
         document.extraction_method = extracted.get("extraction_method")
+        document.content_kind = extracted.get("content_kind") or "UNKNOWN"
+        # Anything not clearly printed goes to a doctor first.
+        document.needs_manual_review = document.content_kind != "PRINT"
+        audit.record(
+            db, "CONTENT_KIND_DETERMINED", actor_type="SERVICE", actor_ref="processing-worker",
+            object_type="DOCUMENT", object_ref=document.ref,
+            reason=f"{document.content_kind}:{'REVIEW' if document.needs_manual_review else 'AUTO'}",
+        )
+
+        if not any(page["text"].strip() for page in extracted["pages"]):
+            # PRINT with no text, or nothing on the page at all: fail
+            # honestly as before. Only unreadable INK goes to review.
+            if not document.needs_manual_review or not extracted.get("has_ink", True):
+                raise ExtractionFailed("No readable text was detected in the document.")
+
+            # Handwritten / mixed / unknown with nothing machine-readable:
+            # keep it for the doctor to read from the original.
+            document.processing_status = "PROCESSED"
+            document.processed_at = datetime.utcnow()
+            result.stage("EXTRACTION", "SKIPPED", "No machine-readable text")
+            result.stage("DOCTOR_REVIEW", "REQUIRED", document.content_kind)
+            result.stage("COMPLETE", "REVIEW")
+            audit.record(
+                db, "EXTRACTION_COMPLETED", actor_type="SERVICE", actor_ref="processing-worker",
+                object_type="DOCUMENT", object_ref=document.ref, reason="REVIEW_NO_TEXT",
+            )
+            db.commit()
+            return result
         document.document_date = (
             date.fromisoformat(extracted["document_date"]) if extracted.get("document_date") else None
         )
@@ -489,15 +539,33 @@ def process_document(db: Session, document: Document, actor_ref: Optional[str] =
 
         _store_extraction(db, document, extracted, result)
 
+        drift = extracted.get("drift") or {}
+        audit.record(
+            db, "DRIFT_CHECKED", actor_type="SERVICE", actor_ref="drift-detector",
+            object_type="DOCUMENT", object_ref=document.ref,
+            result="REVIEW" if drift.get("flagged") else "SUCCESS",
+            reason=f"{drift.get('flagged', 0)}_OF_{drift.get('checked', 0)}:{drift.get('model_status', 'NOT_RUN')}"[:60],
+        )
+        result.drift = drift
+        result.stage(
+            "DRIFT_CHECK", "REVIEW" if drift.get("flagged") else "DONE",
+            f"{drift.get('flagged', 0)} of {drift.get('checked', 0)} items need review"
+            + ("" if drift.get("model") else " (rule checks only)"),
+        )
+
         result.stage("EVIDENCE", "DONE", f"{result.evidence_created} source quotes linked")
 
-        result.potential_matches = detect_potential_matches(db, document)
+        result.potential_matches = [] if document.needs_manual_review else detect_potential_matches(db, document)
 
         result.stage("LOOP_MATCHING", "DONE", f"{len(result.potential_matches)} potential matches")
 
         document.processing_status = "PROCESSED"
         document.processed_at = datetime.utcnow()
-        result.stage("COMPLETE", "DONE")
+
+        if document.needs_manual_review:
+            result.stage("DOCTOR_REVIEW", "REQUIRED", document.content_kind)
+
+        result.stage("COMPLETE", "REVIEW" if document.needs_manual_review else "DONE")
 
         audit.record(
             db, "EXTRACTION_COMPLETED", actor_type="SERVICE", actor_ref="processing-worker",

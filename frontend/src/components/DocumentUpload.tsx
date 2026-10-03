@@ -74,6 +74,8 @@ export function buildSteps(phase: Phase): Step[] {
   const quality = stageOf(result, "QUALITY_CHECK");
   const scan = stageOf(result, "MALWARE_SCAN");
   const retake = result.ingestion_status === "RETAKE";
+  const review = result.needs_manual_review;
+  const extraction = stageOf(result, "EXTRACTION");
 
   return [
     { label: "Uploading", state: "done" },
@@ -86,8 +88,12 @@ export function buildSteps(phase: Phase): Step[] {
     },
     {
       label: "Extracted",
-      state: retake ? "skip" : "done",
-      detail: retake ? "Not attempted" : (result.extraction_method ?? undefined),
+      state: retake || extraction?.status === "SKIPPED" ? "skip" : "done",
+      detail: retake
+        ? "Not attempted"
+        : extraction?.status === "SKIPPED"
+          ? "Doctor reads original"
+          : (result.extraction_method ?? undefined),
     },
     {
       label: "Evidence linked",
@@ -96,8 +102,8 @@ export function buildSteps(phase: Phase): Step[] {
     },
     {
       label: "Complete",
-      state: retake ? "fail" : "done",
-      detail: retake ? "Retake needed" : undefined,
+      state: retake ? "fail" : review ? "warn" : "done",
+      detail: retake ? "Retake needed" : review ? "Needs doctor review" : undefined,
     },
   ];
 }
@@ -180,6 +186,7 @@ export function DocumentUpload({ onProcessed }: Props) {
       >
         <p className="dropzone-title">Drop a medical report here</p>
         <p className="small muted">PDF, JPG or PNG · up to 10 MB</p>
+        <p className="small muted">Photos: place the page on a flat surface, use good light and keep the whole page visible.</p>
         <div className="btn-row center">
           <button type="button" className="btn btn-primary" disabled={busy} onClick={() => fileInput.current?.click()}>
             Choose file
@@ -271,6 +278,17 @@ function Outcome({ result }: { result: IngestionResult }) {
 
   return (
     <>
+      {result.needs_manual_review && (
+        <div className="banner banner-warning" role="status">
+          <span className="badge badge-warning">
+            {result.content_kind === "HANDWRITTEN" || result.content_kind === "MIXED"
+              ? "Handwritten document: needs doctor review"
+              : "Needs doctor review"}
+          </span>{" "}
+          Your document was received and will be reviewed by a doctor. Nothing from it is treated as confirmed until
+          then.
+        </div>
+      )}
       {result.quality_status === "WARN" && (
         <div className="banner banner-warning">
           <strong>WARN</strong> {result.quality_reason} Extracted values need careful review against the source.
@@ -286,6 +304,7 @@ function Outcome({ result }: { result: IngestionResult }) {
           } detected`}
         .
         {result.observations_created + result.open_loops_created + result.facts_created === 0 &&
+          !result.needs_manual_review &&
           " No recognised results or instructions were found in this document."}
       </div>
     </>

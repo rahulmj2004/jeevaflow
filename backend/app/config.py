@@ -200,6 +200,10 @@ class Settings:
         # scanning. Without it a built-in heuristic scanner runs.
         self.clamav_binary = os.getenv("JEEVAFLOW_CLAMAV_BINARY", "")
 
+        # clamd daemon for INSTREAM scanning: a unix socket path or
+        # host:port. Preferred over the binary; required in production.
+        self.clamd_address = os.getenv("JEEVAFLOW_CLAMD_ADDRESS", "")
+
         # Demo-only values (synthetic accounts and patient).
         self.demo_patient_phone = os.getenv(
             "JEEVAFLOW_DEMO_PATIENT_PHONE",
@@ -326,6 +330,11 @@ class Settings:
             if not self.twilio_auth_token:
                 raise ConfigurationError(
                     "TWILIO_AUTH_TOKEN is required in production."
+                )
+
+            if not self.clamd_address:
+                raise ConfigurationError(
+                    "JEEVAFLOW_CLAMD_ADDRESS (ClamAV clamd) is required in production."
                 )
 
 

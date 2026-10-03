@@ -20,8 +20,8 @@ from ..config import settings
 from ..database import get_db
 from ..identity import Role, StaffUser, get_identity, get_identity_db
 from ..models import Consent, Document, DocumentSource, Patient, Transaction
-from ..pipeline import delete_document, ingest_document, process_document
-from ..security import audit
+from ..pipeline import GENERIC_REJECTION, delete_document, ingest_document, process_document
+from ..security import audit, ratelimit
 from ..security.auth import (
     PATIENT_COOKIE,
     PATIENT_SESSION_TTL,
@@ -114,6 +114,8 @@ def _documents(db: Session, patient: Patient) -> list[dict]:
             "received_at": document.created_at,
             "retain_until": document.retain_until,
             "scan_status": document.scan_status,
+            "content_kind": document.content_kind,
+            "needs_manual_review": document.needs_manual_review,
         }
         for document in db.query(Document)
         .filter(Document.patient_id == patient.id)
@@ -124,7 +126,10 @@ def _documents(db: Session, patient: Patient) -> list[dict]:
 
 def _process_transaction(db: Session, idb: Session, patient: Patient, transaction: Transaction, consent: Consent) -> dict:
     documents = quarantined_documents(db, transaction)
-    summary = {"documents": 0, "processed": 0, "facts": 0, "observations": 0, "instructions": 0, "failed": 0}
+    summary = {
+        "documents": 0, "processed": 0, "facts": 0, "observations": 0, "instructions": 0, "failed": 0,
+        "needs_manual_review": 0,
+    }
 
     transaction.consent_id = consent.id
     transaction.status = "CONSENTED"
@@ -139,6 +144,7 @@ def _process_transaction(db: Session, idb: Session, patient: Patient, transactio
             summary["facts"] += result.facts_created
             summary["observations"] += result.observations_created
             summary["instructions"] += result.open_loops_created
+            summary["needs_manual_review"] += int(result.document.needs_manual_review)
         else:
             summary["failed"] += 1
 
@@ -147,6 +153,9 @@ def _process_transaction(db: Session, idb: Session, patient: Patient, transactio
 
     if summary["processed"]:
         send_notification(db, idb, patient, "PROCESSED", transaction.ref)
+
+    if summary["needs_manual_review"]:
+        send_notification(db, idb, patient, "HANDWRITTEN_RECEIVED", transaction.ref)
 
     db.commit()
 
@@ -373,10 +382,27 @@ async def upload_document(
     if active_consent(db, patient.id) is None:
         raise HTTPException(status_code=403, detail="Grant consent before sharing documents.")
 
+    ip = client_ip(request)
+
+    def rejected():
+        # One response for every rejection reason (and for lockout).
+        try:
+            ratelimit.hit("upload_reject_ip", ip)
+        except ratelimit.RateLimited:
+            pass
+        return HTTPException(status_code=400, detail=GENERIC_REJECTION)
+
+    if ratelimit.exhausted("upload_reject_ip", ip):
+        audit.record_now(
+            "DOCUMENT_REJECTED", actor_type="PATIENT", actor_ref=patient.ref,
+            object_type="CASE", object_ref=patient.case_alias, result="DENIED", reason="UPLOAD_LOCKED_IP",
+        )
+        raise HTTPException(status_code=400, detail=GENERIC_REJECTION)
+
     declared_length = request.headers.get("content-length")
 
     if declared_length and declared_length.isdigit() and int(declared_length) > settings.max_upload_bytes + 64 * 1024:
-        raise HTTPException(status_code=413, detail="The file is too large.")
+        raise rejected()
 
     content = await file.read(settings.max_upload_bytes + 1)
 
@@ -391,8 +417,8 @@ async def upload_document(
             None,
             patient.ref,
         )
-    except FileValidationError as exc:
-        raise HTTPException(status_code=413 if exc.code == "FILE_TOO_LARGE" else 400, detail=exc.message)
+    except FileValidationError:
+        raise rejected()
     finally:
         del content
 

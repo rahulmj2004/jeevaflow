@@ -32,6 +32,8 @@ PRESCRIPTION = "jeevaflow_demo_prescription_2026-09-20.pdf"
 INITIAL_REPORT = "jeevaflow_demo_lab_report_2026-06-15.pdf"
 FOLLOWUP_REPORT = "jeevaflow_demo_followup_hba1c_2026-09-20.pdf"
 CONFLICT_REPORT = "jeevaflow_demo_lab_copy_2026-06-15.pdf"
+FOLLOWTHROUGH_PLAN = "jeevaflow_demo_followthrough_plan_2026-10-05.pdf"
+FOLLOWTHROUGH_LABS = "jeevaflow_demo_followthrough_labs_2026-12-28.pdf"
 
 
 DEMO_DOCUMENTS = {
@@ -96,6 +98,39 @@ Report Date: 15/06/2026
 Laboratory Results
 
 HbA1c: 8.2 %
+""",
+    # AI Follow-Through demo: only the kidney instruction is in the
+    # keyword table; thyroid and liver are matched by the AI engine; for
+    # anaemia it ranks haemoglobin first but below the calibrated
+    # threshold, so it abstains; "Review in 4 weeks" names no test.
+    FOLLOWTHROUGH_PLAN: f"""{SYNTHETIC_BANNER}
+
+JEEVAFLOW DEMO CLINIC - FOLLOW-UP PLAN
+
+Dr. Example Physician
+Reg. No: SYN-12345
+Report Date: 05/10/2026
+
+Advice
+Check thyroid function after 6 weeks.
+Monitor liver enzymes in 2 months.
+Repeat kidney function test in 3 months.
+Check for anaemia after iron therapy.
+Review in 4 weeks.
+""",
+    FOLLOWTHROUGH_LABS: f"""{SYNTHETIC_BANNER}
+
+JEEVAFLOW DEMO LABORATORY RESULT
+
+Report Date: 28/12/2026
+
+Laboratory Results
+
+TSH: 3.2 mIU/L
+SGPT (ALT): 32 U/L
+Serum Creatinine: 1.1 mg/dL
+Hemoglobin: 12.6 g/dL
+Vitamin B12: 410 pg/mL
 """,
 }
 

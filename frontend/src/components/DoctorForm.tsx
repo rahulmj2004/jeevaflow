@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
 import { api } from "../api";
 import { formatDate, formatDateTime, formatValue, statusLabel } from "../format";
-import type { DoctorForm as Form, FactField, FactState, FormEvidence, FormFact } from "../types";
+import type { DoctorForm as Form, DriftFinding, DriftResult, FactField, FactState, FormEvidence, FormFact } from "../types";
 import { SecureEvidence } from "./SecureEvidence";
 import { ErrorBanner } from "./StatusBadge";
 
@@ -74,6 +74,40 @@ function EvidencePanel({ evidence, canView }: { evidence: FormEvidence; canView:
   );
 }
 
+const DRIFT_CHECK_LABEL: Record<DriftFinding["check"], string> = {
+  RULE: "Rule check",
+  MODEL: "Local model",
+  "RULE+MODEL": "Rule check + local model",
+};
+
+/**
+ * Drift-detector findings for one item. It never shows a corrected
+ * value: only the reason, the exact source quote and REVIEW REQUIRED.
+ */
+export function DriftAlert({ drift }: { drift?: DriftResult | null }) {
+  if (!drift || drift.status !== "REVIEW REQUIRED") return null;
+
+  return (
+    <div className="drift-alert" role="alert">
+      <strong>⚠ Possible extraction drift: REVIEW REQUIRED</strong>
+      <ul>
+        {drift.findings.map((finding, index) => (
+          <li key={index}>
+            {finding.reason}
+            {finding.source_word && <> (source says “{finding.source_word}”)</>}
+            <blockquote>“{finding.evidence}”</blockquote>
+            <span className="brief-src">
+              {DRIFT_CHECK_LABEL[finding.check]}
+              {finding.model_score != null && ` · contradiction score ${finding.model_score.toFixed(2)}`}
+              {" · "}compare with the original using Evidence
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function FactRows({
   facts,
   fields,
@@ -129,6 +163,13 @@ function FactRows({
                 />
               </td>
             </tr>
+            {fact.drift?.status === "REVIEW REQUIRED" && (
+              <tr className="drift-row">
+                <td colSpan={fields.length + 2}>
+                  <DriftAlert drift={fact.drift} />
+                </td>
+              </tr>
+            )}
             {open === fact.ref && fact.evidence && (
               <tr className="evidence-row">
                 <td colSpan={fields.length + 2}>
@@ -300,6 +341,13 @@ export function DoctorForm({ patientRef, doctorName }: { patientRef: string; doc
                       />
                     </td>
                   </tr>
+                  {group.latest.drift?.status === "REVIEW REQUIRED" && (
+                    <tr className="drift-row">
+                      <td colSpan={4}>
+                        <DriftAlert drift={group.latest.drift} />
+                      </td>
+                    </tr>
+                  )}
                   {openLab === group.latest.id && group.latest.evidence && (
                     <tr className="evidence-row">
                       <td colSpan={4}>
@@ -394,7 +442,19 @@ export function DoctorForm({ patientRef, doctorName }: { patientRef: string; doc
           <tbody>
             {form.sources.map((source) => (
               <tr key={source.ref}>
-                <td>{source.label}</td>
+                <td>
+                  {source.label}
+                  {source.needs_manual_review && (
+                    <>
+                      {" "}
+                      <span className="badge badge-warning">
+                        {source.content_kind === "HANDWRITTEN" || source.content_kind === "MIXED"
+                          ? "Handwritten: needs review"
+                          : "Needs review"}
+                      </span>
+                    </>
+                  )}
+                </td>
                 <td>{formatDate(source.document_date)}</td>
                 <td>{formatDateTime(source.received_at)}</td>
                 <td className="mono small">{source.sha256.slice(0, 16)}…</td>

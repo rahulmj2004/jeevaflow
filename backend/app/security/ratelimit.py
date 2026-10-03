@@ -70,6 +70,9 @@ FIXED_LIMITS = {
     "mfa_ip": (20, 600),
     "evidence_view_user": (60, 600),
     "upload_patient": (20, 3600),
+    # Rejected uploads: lockout after 5, same in every environment.
+    "upload_reject_patient": (5, 3600),
+    "upload_reject_ip": (5, 3600),
 }
 
 # Demo/development: a local demo sends every browser tab and every
@@ -83,6 +86,8 @@ DEMO_FIXED_LIMITS = {
     "mfa_ip": (100, 600),
     "evidence_view_user": (300, 600),
     "upload_patient": (100, 3600),
+    "upload_reject_patient": (5, 3600),
+    "upload_reject_ip": (5, 3600),
 }
 
 _lock = threading.Lock()
@@ -139,6 +144,20 @@ def hit(bucket: str, key: str) -> Usage:
     _track(usage)
 
     return usage
+
+
+def exhausted(bucket: str, key: str) -> bool:
+    """
+    True when the bucket is full. Does not count a request.
+    """
+
+    limit, window = limit_for(bucket)
+    now = time.monotonic()
+
+    with _lock:
+        events = _events.get((bucket, _key(key)))
+
+        return bool(events) and sum(1 for at in events if at > now - window) >= limit
 
 
 def distinct_count(bucket: str, key: str, item: str, window: int) -> int:

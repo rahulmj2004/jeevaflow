@@ -18,6 +18,10 @@ backend/vault/
 vault/
 uploads/
 
+# Local AI model weights (fetched and checksum-verified by
+# backend/scripts/fetch_drift_model.py; never committed)
+backend/models/
+
 # Frontend
 node_modules/
 frontend/dist/

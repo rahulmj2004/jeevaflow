@@ -3,9 +3,9 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import { setCsrf } from "../api";
-import { DoctorForm } from "../components/DoctorForm";
+import { DoctorForm, DriftAlert } from "../components/DoctorForm";
 import { buildSteps } from "../components/DocumentUpload";
-import { OpenLoops } from "../components/OpenLoops";
+import { AiMatchExplanation, OpenLoops } from "../components/OpenLoops";
 import { StaffLogin } from "../components/StaffLogin";
 import { DemoConsole } from "../pages/DemoConsole";
 import { formatDate, formatValue, statusLabel, toneFor } from "../format";
@@ -156,6 +156,8 @@ describe("upload steps", () => {
     quality_status: "RETAKE",
     quality_reason: "Image is blurred.",
     processing_error: null,
+    content_kind: null,
+    needs_manual_review: false,
     extraction_method: null,
     document_date: null,
     source: "WEB",
@@ -182,6 +184,29 @@ describe("upload steps", () => {
     expect(steps.find((s) => s.label === "Validated & scanned")?.detail).toBe("heuristic");
     expect(steps.find((s) => s.label === "Extracted")?.state).toBe("skip");
     expect(steps.at(-1)?.state).toBe("fail");
+  });
+
+  it("shows a handwritten document as doctor review, not as a failure", () => {
+    const handwritten: IngestionResult = {
+      ...base,
+      processing_status: "PROCESSED",
+      quality_status: "GOOD",
+      ingestion_status: "PROCESSED",
+      content_kind: "HANDWRITTEN",
+      needs_manual_review: true,
+      stages: [
+        { stage: "MALWARE_SCAN", status: "CLEAN", detail: "heuristic" },
+        { stage: "QUALITY_CHECK", status: "GOOD", detail: null },
+        { stage: "EXTRACTION", status: "SKIPPED", detail: "No machine-readable text" },
+        { stage: "DOCTOR_REVIEW", status: "REQUIRED", detail: "HANDWRITTEN" },
+        { stage: "COMPLETE", status: "REVIEW", detail: null },
+      ],
+    };
+
+    const steps = buildSteps({ kind: "done", fileName: "rx.jpg", result: handwritten });
+    expect(steps.at(-1)).toMatchObject({ state: "warn", detail: "Needs doctor review" });
+    expect(steps.find((s) => s.label === "Extracted")?.detail).toBe("Doctor reads original");
+    expect(steps.some((s) => s.state === "fail")).toBe(false);
   });
 });
 
@@ -400,5 +425,84 @@ describe("DemoConsole", () => {
     expect(await screen.findByText(/Rate-limit counters cleared/)).toBeInTheDocument();
     expect(posts(fetchMock, "/api/v1/demo/rate-limit/reset")).toHaveLength(1);
     expect(posts(fetchMock, "/api/v1/demo/reset")).toHaveLength(0);
+  });
+});
+
+describe("DriftAlert", () => {
+  it("shows the exact source quote and REVIEW REQUIRED, never a corrected value", () => {
+    render(
+      <DriftAlert
+        drift={{
+          status: "REVIEW REQUIRED",
+          model: "nli-deberta-v3-xsmall@2a4f614",
+          model_checked_fields: ["dose", "frequency"],
+          findings: [
+            {
+              code: "TIMING_MISMATCH",
+              field: "frequency",
+              reason: "The extracted timing or frequency conflicts with the source evidence.",
+              evidence: "Inj Insulin 20 units at night",
+              check: "MODEL",
+              model_score: 0.989,
+              source_word: null,
+              action: "REVIEW REQUIRED",
+            },
+          ],
+        }}
+      />,
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Possible extraction drift: REVIEW REQUIRED");
+    expect(screen.getByText("“Inj Insulin 20 units at night”")).toBeInTheDocument();
+    expect(screen.getByText(/Local model · contradiction score 0.99/)).toBeInTheDocument();
+  });
+
+  it("renders nothing when the extraction is consistent", () => {
+    const { container } = render(
+      <DriftAlert drift={{ status: "CONSISTENT", findings: [], model: null, model_checked_fields: [] }} />,
+    );
+    expect(container).toBeEmptyDOMElement();
+  });
+});
+
+describe("AiMatchExplanation", () => {
+  it("shows the chosen result, the alternatives and the calibrated threshold", () => {
+    render(
+      <AiMatchExplanation
+        match={{
+          id: 1,
+          status: "PENDING",
+          rule: "AI semantic match (local biomedical model)",
+          method: "AI_SEMANTIC",
+          score: 0.645,
+          explanation: {
+            method: "AI_SEMANTIC",
+            model: "pubmedbert-base-embeddings@b79526d",
+            score: 0.645,
+            rank: 1,
+            candidates: 5,
+            threshold: 0.34,
+            alternatives: [
+              { label: "SGPT (ALT)", score: 0.33 },
+              { label: "Vitamin B12", score: 0.21 },
+            ],
+          },
+          observation: { id: 9, observation_type: "TSH", value: "3.2", unit: "mIU/L", event_date: null, review_status: "REVIEW" },
+          document_id: 2,
+          document_filename: "Synthetic lab report",
+          document_source: "WEB",
+          evidence: null,
+          reviewed_by: null,
+          reviewed_at: null,
+          created_at: "2026-12-28T10:00:00",
+        }}
+      />,
+    );
+
+    expect(screen.getByText("AI follow-through")).toBeInTheDocument();
+    expect(screen.getByText("TSH")).toBeInTheDocument();
+    expect(screen.getByText("SGPT (ALT)")).toBeInTheDocument();
+    expect(screen.getByText(/at least 0.34/)).toBeInTheDocument();
+    expect(screen.getByText(/A suggestion, not a decision/)).toBeInTheDocument();
   });
 });

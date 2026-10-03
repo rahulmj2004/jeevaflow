@@ -136,6 +136,23 @@ def build_doctor_form(db: Session, idb: Session, patient: Patient, consent: Cons
         .all()
     )
 
+    def drift_of(raw: Optional[str], section: str, item: str, evidence, fact_ref: Optional[str] = None):
+        """
+        Parse a stored drift result and list each finding as an
+        uncertain item pointing at the original evidence.
+        """
+
+        drift = json.loads(raw) if raw else None
+
+        for finding in (drift or {}).get("findings", []):
+            uncertain.append({
+                "section": section, "item": item, "field": finding["field"],
+                "note": f"Possible extraction drift: {finding['reason']} {finding['action']}.",
+                "fact_ref": fact_ref, "evidence": evidence, "drift_code": finding["code"],
+            })
+
+        return drift
+
     def fact_item(fact: ClinicalFact) -> dict:
         fields = json.loads(fact.fields)
 
@@ -160,6 +177,9 @@ def build_doctor_form(db: Session, idb: Session, patient: Patient, consent: Cons
             "review_status": fact.review_status,
             "confidence": fact.confidence,
             "evidence": ev(fact.evidence_id, fact.document_id),
+            "drift": drift_of(
+                fact.drift, fact.category, fact.label, ev(fact.evidence_id, fact.document_id), fact.ref
+            ),
         }
 
     # ---------------- medications + prescriber ----------------
@@ -212,9 +232,10 @@ def build_doctor_form(db: Session, idb: Session, patient: Patient, consent: Cons
                 "note": observation.fact_note,
                 "evidence": ev(observation.evidence_id, observation.document_id),
             }
+            item["drift"] = drift_of(observation.drift, "LAB", observation.observation_type, item["evidence"])
             groups.setdefault(observation.observation_type, []).append(item)
 
-            if observation.fact_state == FactState.UNCERTAIN.value:
+            if observation.fact_state == FactState.UNCERTAIN.value and not (item["drift"] or {}).get("findings"):
                 uncertain.append({
                     "section": "LAB", "item": observation.observation_type, "field": "value",
                     "note": observation.fact_note, "evidence": item["evidence"],
@@ -263,9 +284,25 @@ def build_doctor_form(db: Session, idb: Session, patient: Patient, consent: Cons
             "pages": document.page_count,
             "sha256": document.sha256,
             "scan_engine": document.scan_engine,
+            "content_kind": document.content_kind,
+            "needs_manual_review": document.needs_manual_review,
         }
         for document in sorted(documents.values(), key=lambda d: d.created_at)
     ]
+
+    # Handwritten / mixed / unclear documents: flagged for review even
+    # when nothing could be extracted from them.
+    for document in sorted(documents.values(), key=lambda d: d.created_at):
+        if document.needs_manual_review:
+            uncertain.append({
+                "section": "DOCUMENT", "item": document.label, "field": None,
+                "note": (
+                    "Handwritten document: needs doctor review."
+                    if document.content_kind in ("HANDWRITTEN", "MIXED")
+                    else "Document could not be classified: needs doctor review."
+                ),
+                "evidence": None,
+            })
 
     return mask_tree({
         "generated_at": datetime.utcnow(),

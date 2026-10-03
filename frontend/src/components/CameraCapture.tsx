@@ -87,9 +87,13 @@ export function CameraCapture({ onCapture, onClose }: Props) {
         ) : (
           <video ref={videoRef} className="camera-video" playsInline muted />
         )}
+        <ul className="small muted capture-tips">
+          <li>Place the page on a flat surface.</li>
+          <li>Use good light and avoid shadows.</li>
+          <li>Keep the whole page visible and hold steady.</li>
+        </ul>
         <p className="small muted">
-          Fill the frame with the page, avoid shadows and hold steady. Blurred or dark photos are rejected with a
-          request to retake.
+          Blurred or dark photos are rejected with a request to retake. Handwritten pages are reviewed by a doctor.
         </p>
         <div className="btn-row">
           <button type="button" className="btn btn-primary" onClick={capture} disabled={!ready || !!error}>

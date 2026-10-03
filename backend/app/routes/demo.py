@@ -25,7 +25,17 @@ from starlette.requests import Request as StarletteRequest
 
 from ..config import settings
 from ..database import get_db
-from ..demo import DEMO_DOCUMENTS, FOLLOWUP_REPORT, CONFLICT_REPORT, INITIAL_REPORT, PRESCRIPTION, demo_document_bytes, reset_patient_records
+from ..demo import (
+    CONFLICT_REPORT,
+    DEMO_DOCUMENTS,
+    FOLLOWTHROUGH_LABS,
+    FOLLOWTHROUGH_PLAN,
+    FOLLOWUP_REPORT,
+    INITIAL_REPORT,
+    PRESCRIPTION,
+    demo_document_bytes,
+    reset_patient_records,
+)
 from ..identity import get_identity_db
 from ..models import OutboundMessage
 from ..seed import DEMO_STAFF, demo_identity, demo_patient
@@ -44,6 +54,8 @@ DOCUMENTS = {
     "lab_report": (INITIAL_REPORT, "Synthetic lab report (15 Jun 2026)"),
     "followup": (FOLLOWUP_REPORT, "Synthetic follow-up HbA1c (20 Sep 2026)"),
     "conflict": (CONFLICT_REPORT, "Synthetic transcribed copy (same day, different value)"),
+    "followthrough_plan": (FOLLOWTHROUGH_PLAN, "AI follow-through: follow-up plan (5 Oct 2026)"),
+    "followthrough_labs": (FOLLOWTHROUGH_LABS, "AI follow-through: later lab report (28 Dec 2026)"),
 }
 
 

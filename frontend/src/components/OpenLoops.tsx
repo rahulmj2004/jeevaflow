@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { api } from "../api";
 import { formatDate, formatDateTime, formatValue, humanize } from "../format";
-import type { Evidence, LoopHistoryEntry, OpenLoop } from "../types";
+import type { Evidence, LoopHistoryEntry, LoopMatch, OpenLoop } from "../types";
 import type { EvidenceSelection } from "./EvidenceViewer";
 import { EmptyState, ErrorBanner, SourceIcon, StatusBadge } from "./StatusBadge";
 
@@ -190,7 +190,11 @@ function LoopCard({ loop, onChanged, onInspect }: { loop: OpenLoop } & Omit<Prop
               />
             </div>
           </div>
-          <p className="small muted rule">Why suggested: {match.rule}</p>
+          {match.method === "AI_SEMANTIC" && match.explanation ? (
+            <AiMatchExplanation match={match} />
+          ) : (
+            <p className="small muted rule">Why suggested: {match.rule}</p>
+          )}
           <p className="small">
             JeevaFlow does not judge the result. A person decides whether this fulfils the instruction.
           </p>
@@ -257,6 +261,45 @@ export function OpenLoops({ loops, onChanged, onInspect }: Props) {
       {sorted.map((loop) => (
         <LoopCard key={loop.id} loop={loop} onChanged={onChanged} onInspect={onInspect} />
       ))}
+    </div>
+  );
+}
+
+/**
+ * Why the follow-through engine suggested this result: every candidate
+ * it scored, against the calibrated threshold. It ranks quoted
+ * evidence only; it never decides that the instruction was fulfilled.
+ */
+export function AiMatchExplanation({ match }: { match: LoopMatch }) {
+  const explanation = match.explanation;
+  if (!explanation) return null;
+
+  const rows = [
+    { label: match.observation?.observation_type ?? "Suggested result", score: explanation.score, chosen: true },
+    ...explanation.alternatives.map((item) => ({ ...item, chosen: false })),
+  ];
+  const width = (score: number) => `${Math.max(0, Math.min(1, score)) * 100}%`;
+
+  return (
+    <div className="ai-match" aria-label="AI follow-through explanation">
+      <p className="small">
+        <span className="badge badge-accent">AI follow-through</span> Local biomedical model matched the instruction’s
+        test to this result: similarity <strong>{explanation.score.toFixed(2)}</strong>, ranked {explanation.rank} of{" "}
+        {explanation.candidates}. Suggestions need a similarity of at least {explanation.threshold.toFixed(2)}.
+      </p>
+      <ul className="ai-bars">
+        {rows.map((row) => (
+          <li key={row.label} className={row.chosen ? "ai-bar ai-bar-chosen" : "ai-bar"}>
+            <span className="ai-bar-label">{row.label}</span>
+            <span className="ai-bar-track">
+              <span className="ai-bar-fill" style={{ width: width(row.score) }} />
+              <span className="ai-bar-threshold" style={{ left: width(explanation.threshold) }} aria-hidden="true" />
+            </span>
+            <span className="ai-bar-score mono">{row.score.toFixed(2)}</span>
+          </li>
+        ))}
+      </ul>
+      <p className="small muted">Model: {explanation.model}. A suggestion, not a decision.</p>
     </div>
   );
 }

@@ -629,6 +629,146 @@ def test_portal_upload_requires_active_consent(client):
     assert "john_doe" not in upload.text
 
 
+def _javascript_pdf() -> bytes:
+    import pymupdf
+
+    document = pymupdf.open()
+    document.new_page().insert_text((72, 72), "hello")
+    content = document.tobytes()
+    document.close()
+
+    return content.replace(b"/Type/Catalog", b"/Type/Catalog/OpenAction<</S/JavaScript/JS(app.alert(1))>>", 1)
+
+
+def _portal_upload(client, filename, content, content_type="application/pdf"):
+    return client.post("/api/v1/portal/documents", files={"file": (filename, content, content_type)})
+
+
+def test_upload_rejections_are_generic_and_store_nothing(client, monkeypatch):
+    from app.security.scanner import EICAR
+
+    verify_portal(client, send_demo(client, None))
+    consent_via_portal(client)
+    monkeypatch.setattr(settings, "max_upload_bytes", 50_000)
+    vault_before = set(settings.vault_dir.iterdir())
+
+    rejected = {
+        "eicar": ("report.pdf", make_pdf("hello") + b"\n%" + EICAR),
+        "exe_renamed_pdf": ("invoice.pdf", b"MZ\x90\x00\x03\x00\x00\x00This program cannot be run in DOS mode"),
+        "javascript_pdf": ("report.pdf", _javascript_pdf()),
+        "oversized": ("report.pdf", b"%PDF-1.4\n" + b"0" * 60_000),
+    }
+
+    responses = {name: _portal_upload(client, *case) for name, case in rejected.items()}
+
+    for name, response in responses.items():
+        assert response.status_code == 400, name
+        assert response.json() == {"detail": "File could not be accepted."}, name
+
+    db = SessionLocal()
+    try:
+        assert db.query(Document).count() == 0
+        events = db.query(AuditEvent).filter(AuditEvent.action == "DOCUMENT_REJECTED").all()
+    finally:
+        db.close()
+
+    assert set(settings.vault_dir.iterdir()) == vault_before
+    assert len(events) == len(rejected)
+    assert {event.object_type for event in events} == {"CASE"}
+    assert {event.reason.split(":")[0] for event in events} >= {"MALWARE_DETECTED", "CONTENT_MISMATCH", "FILE_TOO_LARGE"}
+    assert all(re.search(r":[0-9a-f]{24}$", event.reason) for event in events)
+
+    clean = _portal_upload(client, "report.pdf", make_pdf(INITIAL_REPORT_TEXT))
+    assert clean.status_code == 200, clean.text
+
+
+def test_scanner_exception_rejects_upload(patient_ref, monkeypatch):
+    from app.security import scanner
+    from app.storage import FileValidationError
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("scanner crashed")
+
+    monkeypatch.setattr(scanner, "scan", broken)
+
+    with pytest.raises(FileValidationError) as error:
+        ingest(patient_ref, make_pdf(PRESCRIPTION_TEXT))
+
+    assert error.value.message == "File could not be accepted."
+
+    db = SessionLocal()
+    try:
+        assert db.query(Document).count() == 0
+    finally:
+        db.close()
+
+
+def _fake_clamd(monkeypatch, reply: bytes):
+    import socket
+    import threading
+
+    from app.security import scanner
+
+    ours, theirs = socket.socketpair()
+
+    def serve():
+        with theirs:
+            data = b""
+            while not data.endswith(b"\x00\x00\x00\x00"):
+                data += theirs.recv(65536)
+            assert data.startswith(b"zINSTREAM\x00")
+            theirs.sendall(reply)
+
+    threading.Thread(target=serve, daemon=True).start()
+    monkeypatch.setattr(settings, "clamd_address", "fake:0")
+    monkeypatch.setattr(scanner, "_clamd_connect", lambda: ours)
+
+
+def test_clamd_instream_verdicts(monkeypatch):
+    from app.security import scanner
+
+    _fake_clamd(monkeypatch, b"stream: OK\x00")
+    assert scanner.scan(make_pdf("hello"), "application/pdf").clean
+
+    _fake_clamd(monkeypatch, b"stream: Win.Test.EICAR_HDB-1 FOUND\x00")
+    assert scanner.scan(make_pdf("hello"), "application/pdf").code == "MALWARE_SIGNATURE"
+
+    # Unreachable daemon: fail closed.
+    monkeypatch.setattr(scanner, "_clamd_connect", lambda: (_ for _ in ()).throw(TimeoutError()))
+    assert scanner.scan(make_pdf("hello"), "application/pdf").code == "SCANNER_ERROR"
+
+
+def test_production_requires_clamav(monkeypatch):
+    from app.config import ConfigurationError, Settings
+    from app.security import scanner
+
+    for name, value in {
+        "JEEVAFLOW_ENV": "production", "JEEVAFLOW_COOKIE_SECURE": "true",
+        "PUBLIC_BASE_URL": "https://example.test", "TWILIO_AUTH_TOKEN": "synthetic",
+    }.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("JEEVAFLOW_CLAMD_ADDRESS", raising=False)
+
+    with pytest.raises(ConfigurationError, match="CLAMD"):
+        Settings().validate()
+
+    monkeypatch.setattr(settings, "environment", "production")
+    monkeypatch.setattr(settings, "clamd_address", "")
+    assert scanner.scan(make_pdf("hello"), "application/pdf").code == "SCANNER_UNAVAILABLE"
+
+
+def test_upload_lockout_after_five_rejections(client):
+    verify_portal(client, send_demo(client, None))
+    consent_via_portal(client)
+
+    for _ in range(5):
+        assert _portal_upload(client, "x.pdf", b"MZ\x90\x00 not a pdf").status_code == 400
+
+    locked = _portal_upload(client, "report.pdf", make_pdf(INITIAL_REPORT_TEXT))
+    assert locked.status_code == 400
+    assert locked.json() == {"detail": "File could not be accepted."}
+
+
 # ============================================================
 # ENCRYPTION AND STORAGE
 # ============================================================

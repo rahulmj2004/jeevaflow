@@ -156,6 +156,56 @@ def _plausible(value: str, valid_range) -> bool:
     return low <= number <= high
 
 
+# Any other "Label: value unit" result line, so that follow-through
+# is not limited to the analytes above. The value and unit are read
+# exactly as printed (quote-anchored); the label is kept as written and
+# never interpreted, and nothing is judged normal or abnormal.
+_RESULT_UNITS = (
+    r"mg/dL|mg/L|g/dL|g/L|mmol/L|µmol/L|umol/L|mIU/L|mIU/mL|µIU/mL|uIU/mL|IU/L|IU/mL|U/L|"
+    r"ng/mL|ng/dL|pg/mL|µg/dL|ug/dL|mcg/dL|mEq/L|mL/min(?:/1\.73\s?m2)?|mg/g|mg/mmol|"
+    r"mm/hr|mm/1st\s?hr|lakh/cumm|cells/cumm|million/cumm|/cumm|fL|%"
+)
+_RESULT_LINE = re.compile(
+    r"^[ \t]*(?:[-*•]|\d+[.)])?[ \t]*"
+    r"(?P<label>[A-Za-z][A-Za-z0-9 ()\-/,.'+]{1,48}?)[ \t]*[:\-]?[ \t]+"
+    r"(?P<value>\d+(?:\.\d+)?)[ \t]*(?P<unit>" + _RESULT_UNITS + r")(?![A-Za-z])",
+    re.MULTILINE,
+)
+_NOT_A_RESULT = re.compile(
+    r"\b(?:date|age|reg|registration|phone|mobile|uhid|mrn|id|no|bill|amount|rs|weight|height|"
+    r"page|ref|reference|range|time|bed|ward|tab|cap|inj|syp)\b",
+    re.IGNORECASE,
+)
+
+
+def _result_lines(page: dict, taken: list[tuple[int, int]]) -> list[dict]:
+    found = []
+
+    for match in _RESULT_LINE.finditer(page["text"]):
+        label = re.sub(r"\s+", " ", match.group("label")).strip(" -:")
+        start, end = match.start("label"), match.end("unit")
+
+        if len(label) < 2 or _NOT_A_RESULT.search(label):
+            continue
+
+        if any(start < taken_end and taken_start < end for taken_start, taken_end in taken):
+            continue
+
+        quote = page["text"][start:end]
+
+        found.append({
+            "observation_type": label[:100],
+            "value": match.group("value"),
+            "unit": match.group("unit"),
+            "quote": quote,
+            "page_number": page["page_number"],
+            "start_position": start,
+            "end_position": end,
+        })
+
+    return found
+
+
 def extract_observations_from_pages(pages):
     """
     Extract observations while preserving the source page.
@@ -210,6 +260,13 @@ def extract_observations_from_pages(pages):
                     }
                 )
 
+        taken = [
+            (item["start_position"], item["end_position"])
+            for item in observations
+            if item["page_number"] == page_number
+        ]
+        observations.extend(_result_lines(page, taken))
+
     return observations
 
 
@@ -250,6 +307,7 @@ COMMITMENT_PATTERNS = [
     r"review\b[^.\n]*",
     r"refer(?:red)?\s+to\b[^.\n]*",
     r"(?:recheck|re-check)\b[^.\n]*",
+    r"(?:check|monitor|screen\s+for|test\s+for)\b[^.\n]*",
 ]
 
 _COMMITMENT_REGEX = re.compile(

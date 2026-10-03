@@ -50,10 +50,23 @@ export interface TimelineItem {
   created_at: string | null;
 }
 
+export interface MatchExplanation {
+  method: "AI_SEMANTIC";
+  model: string;
+  score: number;
+  rank: number;
+  candidates: number;
+  threshold: number;
+  alternatives: { label: string; score: number }[];
+}
+
 export interface LoopMatch {
   id: number;
   status: string;
   rule: string;
+  method?: "RULE" | "AI_SEMANTIC";
+  score?: number | null;
+  explanation?: MatchExplanation | null;
   observation: {
     id: number;
     observation_type: string;
@@ -151,6 +164,8 @@ export interface IngestionStage {
   detail: string | null;
 }
 
+export type ContentKind = "PRINT" | "HANDWRITTEN" | "MIXED" | "UNKNOWN";
+
 export interface IngestionResult {
   ref: string;
   label: string;
@@ -159,11 +174,14 @@ export interface IngestionResult {
   quality_reason: string | null;
   processing_error: string | null;
   extraction_method: string | null;
+  content_kind: ContentKind | null;
+  needs_manual_review: boolean;
   document_date: string | null;
   source: string;
   scan_status: string | null;
   scan_engine: string | null;
   ingestion_status: "RECEIVED" | "PROCESSED" | "DUPLICATE" | "RETAKE" | "FAILED";
+  drift?: { model: string | null; model_status: string; checked: number; flagged: number } | null;
   duplicate: boolean;
   observations_created: number;
   open_loops_created: number;
@@ -213,6 +231,24 @@ export interface FormEvidence {
   confidence: number | null;
 }
 
+export interface DriftFinding {
+  code: string;
+  field: string;
+  reason: string;
+  evidence: string;
+  check: "RULE" | "MODEL" | "RULE+MODEL";
+  model_score: number | null;
+  source_word: string | null;
+  action: "REVIEW REQUIRED";
+}
+
+export interface DriftResult {
+  status: "REVIEW REQUIRED" | "CONSISTENT" | "RULES_ONLY" | "NOT_CHECKED";
+  findings: DriftFinding[];
+  model: string | null;
+  model_checked_fields: string[];
+}
+
 export interface FormFact {
   ref: string;
   label: string;
@@ -221,6 +257,7 @@ export interface FormFact {
   review_status: string;
   confidence: number | null;
   evidence: FormEvidence | null;
+  drift?: DriftResult | null;
 }
 
 export interface FormLabValue {
@@ -232,6 +269,7 @@ export interface FormLabValue {
   state: FactState;
   note: string | null;
   evidence: FormEvidence | null;
+  drift?: DriftResult | null;
 }
 
 export interface FormFlag {
@@ -241,6 +279,7 @@ export interface FormFlag {
   note: string | null;
   fact_ref?: string;
   evidence?: FormEvidence | null;
+  drift_code?: string;
 }
 
 export interface DoctorForm {
@@ -274,6 +313,8 @@ export interface DoctorForm {
     pages: number | null;
     sha256: string;
     scan_engine: string | null;
+    content_kind: ContentKind | null;
+    needs_manual_review: boolean;
   }[];
   notice: string;
 }
@@ -302,6 +343,8 @@ export interface PortalDocument {
   received_at: string;
   retain_until: string | null;
   scan_status: string | null;
+  content_kind: ContentKind | null;
+  needs_manual_review: boolean;
 }
 
 export interface PortalSession {

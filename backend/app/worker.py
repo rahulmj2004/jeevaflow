@@ -362,6 +362,81 @@ def _locate(page_info: dict, quote: str, pdf_page=None):
     return box, conf if conf is not None else page_info.get("mean_conf")
 
 
+def _page_kind(image, words: list[dict]) -> str:
+    """
+    PRINT | HANDWRITTEN | UNKNOWN | BLANK for one OCR'd page. The
+    detector runs even when OCR found no words (typical for
+    handwriting). Ink that is neither confidently print nor
+    handwriting, or a detector failure, is UNKNOWN (doctor review).
+    BLANK means no ink at all.
+    """
+
+    import numpy as np
+
+    from app.handwriting.detect import detect
+
+    try:
+        verdict = detect(np.array(image.convert("L")), words)
+    except Exception:
+        return "UNKNOWN"
+
+    if not verdict["has_ink"]:
+        return "BLANK"
+
+    if verdict["is_handwritten"]:
+        return "HANDWRITTEN"
+
+    return "PRINT" if words else "UNKNOWN"
+
+
+def _document_kind(kinds: list[str]) -> str:
+    # Blank / unclear pages do not decide a document that has content.
+    known = set(kinds) - {"UNKNOWN", "BLANK"}
+
+    if not known:
+        return "UNKNOWN"
+
+    if known == {"PRINT"}:
+        return "PRINT"
+
+    return "HANDWRITTEN" if known == {"HANDWRITTEN"} else "MIXED"
+
+
+def _embed_for_followthrough(commitments: list[dict], observations: list[dict]) -> dict:
+    """
+    Follow-through engine: embed each instruction's test concept and
+    each result's LABEL (never its value) with the local biomedical
+    encoder. Matching later uses only these vectors. Without a
+    verified model nothing is embedded and the rule matcher still runs.
+    """
+
+    from app.followthrough import semantic
+    from app.followthrough.encoder import MODEL_ID, load
+    from app.followthrough.text import instruction_concept, result_label
+
+    targets = [(item, instruction_concept(item["instruction"])) for item in commitments]
+    targets += [(item, result_label(item["observation_type"])) for item in observations]
+    targets = [(item, text) for item, text in targets if text]
+
+    if not targets:
+        return {"model": None, "status": "NOTHING_TO_EMBED", "embedded": 0}
+
+    encoder, problem = load()
+
+    if encoder is None:
+        return {"model": None, "status": problem, "embedded": 0}
+
+    try:
+        vectors = encoder.encode([text for _, text in targets])
+    except Exception:
+        return {"model": None, "status": "ENCODE_FAILED", "embedded": 0}
+
+    for (item, _), vector in zip(targets, vectors):
+        item["embedding"] = semantic.pack(MODEL_ID, vector)
+
+    return {"model": MODEL_ID, "status": "ACTIVE", "embedded": len(targets)}
+
+
 def op_extract(job: dict) -> dict:
     from datetime import date
 
@@ -379,6 +454,7 @@ def op_extract(job: dict) -> dict:
     pdf = None
     quality = None
     pages = []
+    kinds = []
 
     if content_type == "application/pdf":
         import pymupdf
@@ -391,12 +467,14 @@ def op_extract(job: dict) -> dict:
 
             if text.strip():
                 pages.append({"page_number": number, "text": text, "method": "TEXT"})
+                kinds.append("PRINT")
                 continue
 
             pixmap = page.get_pixmap(dpi=OCR_RENDER_DPI)
 
             with Image.open(io.BytesIO(pixmap.tobytes("png"))) as image:
                 text, words, mean = _ocr_words(image)
+                kinds.append(_page_kind(image, words))
 
             pages.append({
                 "page_number": number, "text": text, "method": "OCR",
@@ -414,6 +492,7 @@ def op_extract(job: dict) -> dict:
             return {"quality": quality, "pages": None}
 
         text, words, mean = _ocr_words(image)
+        kinds.append(_page_kind(image, words))
         pages.append({
             "page_number": 1, "text": text, "method": "OCR",
             "words": words, "mean_conf": mean,
@@ -451,9 +530,29 @@ def op_extract(job: dict) -> dict:
         if item.get("due_date"):
             item["due_date"] = item["due_date"].isoformat()
 
+    content_kind = _document_kind(kinds)
+
+    # Semantic safety layer: does each extraction still mean what its
+    # quote says? Flags only; never changes a value.
+    from app.drift import check_document
+
+    try:
+        drift = check_document(facts, observations, content_kind)
+    except Exception:
+        drift = {"model": None, "model_status": "CHECK_FAILED", "checked": 0, "flagged": 0}
+
+        for item in facts + observations:
+            item["drift"] = {"status": "NOT_CHECKED", "findings": [], "model": None, "model_checked_fields": []}
+
+    followthrough = _embed_for_followthrough(commitments, observations)
+
     return {
         "quality": quality,
         "extraction_method": method,
+        "content_kind": content_kind,
+        "drift": drift,
+        "followthrough": followthrough,
+        "has_ink": any(kind != "BLANK" for kind in kinds),
         "document_date": document_date.isoformat() if document_date else None,
         "pages": [
             {"page_number": page["page_number"], "text": page["text"], "method": page["method"]}

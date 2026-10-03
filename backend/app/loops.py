@@ -6,6 +6,7 @@ The system may move a loop to POTENTIAL_MATCH (see matching.py).
 Only a human action can move a loop to CLOSED.
 """
 
+import json
 from datetime import date, datetime
 from typing import Optional
 
@@ -104,6 +105,9 @@ def serialize_match(db: Session, match: LoopMatch) -> dict:
         "id": match.id,
         "status": match.status,
         "rule": match.rule,
+        "method": match.method,
+        "score": match.score,
+        "explanation": json.loads(match.explanation) if match.explanation else None,
         "observation": (
             {
                 "id": observation.id,
